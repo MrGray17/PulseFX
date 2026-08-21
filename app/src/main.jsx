@@ -11,13 +11,21 @@ const bands = ['20','25','31','40','50','63','80','100','125','160','200','250',
 const flat = () => bands.map(() => 0);
 const presets = {
   Flat: flat(),
-  Music: [2,2,2,2,2,2,1,1,1,0,0,0,0,-1,-1,-1,0,1,1,1,1,1,1,2,2,2,2,2,2,1,1],
-  Movies: [2,2,2,2,2,1,1,1,0,0,0,0,0,1,1,2,2,2,2,2,2,2,2,1,1,1,1,1,0,0,0],
-  Vocal: [-2,-2,-2,-2,-2,-2,-1,-1,-1,0,0,0,1,1,1,2,2,3,3,3,3,2,2,1,1,1,0,0,-1,-1,-1],
+  Pop: [-1,-1,0,1,2,2,2,1,0,-1,-1,0,1,2,3,3,2,2,1,1,2,2,3,3,3,2,1,1,1,0,0],
+  Loud: [4,4,4,4,4,3,3,2,1,0,-1,-1,-1,0,1,2,2,2,2,2,2,2,3,3,4,4,4,4,3,2,2],
+  Classical: [0,0,0,0,0,0,-1,-1,-1,-1,-1,0,0,1,2,2,2,2,1,1,1,2,2,2,2,1,1,0,0,0,0],
+  Party: [4,4,4,4,3,3,2,1,0,-1,-1,-1,0,1,2,2,2,1,1,2,3,3,4,4,4,4,3,2,2,1,1],
+  Reggae: [1,2,3,4,4,3,2,1,0,-1,-2,-2,-1,0,1,2,2,1,0,0,1,2,2,2,1,1,0,0,0,0,0],
+  Movie: [3,3,3,3,2,2,1,0,0,0,1,2,3,4,4,4,3,3,2,2,2,2,2,2,2,1,1,1,1,0,0],
+  'Hip-hop': [4,4,5,5,5,4,3,2,1,0,-1,-1,0,1,2,3,3,2,2,2,2,3,3,3,2,2,1,1,0,0,0],
+  Jazz: [2,2,2,1,1,0,-1,-1,0,1,2,3,3,3,2,1,1,1,2,2,3,3,3,2,2,2,2,2,1,1,1],
+  Deep: [5,5,5,5,5,4,3,2,1,0,-1,-2,-2,-1,0,1,1,1,1,1,1,1,1,1,0,0,0,0,-1,-1,-1],
+  Dubstep: [5,5,5,5,5,4,3,2,0,-1,-2,-2,-1,0,1,2,2,2,1,2,3,4,5,5,5,4,3,2,1,1,1],
+  Trap: [5,5,5,5,4,4,3,2,1,0,-1,-2,-2,-1,0,1,2,2,2,2,3,4,5,5,4,3,2,1,1,0,0],
 };
 
 const effects = [
-  { id: 'surround', label: '3D Surround', icon: Layers3, description: 'Binaural HRTF rendering with cross-ear timing and spectral cues.' },
+  { id: 'surround', label: '3D Surround', icon: Layers3, description: 'Binaural HRTF rendering with multichannel speaker virtualization.' },
   { id: 'fidelity', label: 'Fidelity', icon: Sparkles, description: 'Adaptive detail lift that favors quieter spectral information.' },
   { id: 'spatial', label: 'Spatial', icon: Waves, description: 'Frequency-aware stereo expansion while keeping low frequencies anchored.' },
   { id: 'ambience', label: 'Ambience', icon: Radio, description: 'Short early reflections that add space without washing out transients.' },
@@ -47,8 +55,9 @@ function App() {
   const [effectEnabled, setEffectEnabled] = useState(defaultEffectEnabled);
   const [effectAmounts, setEffectAmounts] = useState(defaultEffectAmounts);
   const [preamp, setPreamp] = useState(0);
-  const [preset, setPreset] = useState('Music');
-  const [eq, setEq] = useState([...presets.Music]);
+  const [pitch, setPitch] = useState(0);
+  const [preset, setPreset] = useState('Pop');
+  const [eq, setEq] = useState([...presets.Pop]);
   const [headphoneEq, setHeadphoneEq] = useState(false);
   const [outputId, setOutputId] = useState('');
   const [devices, setDevices] = useState([]);
@@ -106,6 +115,7 @@ function App() {
   const syncAllControls = async (state) => {
     await run('enabled', state.enabled);
     await run('preamp', state.preamp);
+    await run('pitch', state.pitch);
     await run('headphone_enable', state.headphoneEq);
     for (const effect of effects) {
       await sendEffect(effect.id, Boolean(state.effectEnabled[effect.id]), state.effectAmounts[effect.id] ?? 0);
@@ -119,18 +129,21 @@ function App() {
     (async () => {
       const saved = await pulsefxApi.loadSettings();
       if (cancelled) return;
+      const restoredPreset = typeof saved.preset === 'string' && presets[saved.preset] ? saved.preset : 'Pop';
       const restored = {
         enabled: typeof saved.enabled === 'boolean' ? saved.enabled : true,
         preamp: clamp(saved.preamp ?? 0, -12, 9),
+        pitch: clamp(saved.pitch ?? 0, -5, 5),
         headphoneEq: typeof saved.headphoneEq === 'boolean' ? saved.headphoneEq : false,
         effectEnabled: { ...defaultEffectEnabled, ...(saved.effectEnabled ?? {}) },
         effectAmounts: { ...defaultEffectAmounts, ...(saved.effectAmounts ?? {}) },
-        eq: Array.isArray(saved.eq) && saved.eq.length === bands.length ? saved.eq.map((value) => clamp(value, -12, 12)) : [...presets.Music],
-        preset: typeof saved.preset === 'string' ? saved.preset : 'Music',
+        eq: Array.isArray(saved.eq) && saved.eq.length === bands.length ? saved.eq.map((value) => clamp(value, -12, 12)) : [...presets[restoredPreset]],
+        preset: restoredPreset,
         outputId: typeof saved.outputId === 'string' ? saved.outputId : '',
       };
       setEnabled(restored.enabled);
       setPreamp(restored.preamp);
+      setPitch(restored.pitch);
       setHeadphoneEq(restored.headphoneEq);
       setEffectEnabled(restored.effectEnabled);
       setEffectAmounts(restored.effectAmounts);
@@ -158,10 +171,10 @@ function App() {
   useEffect(() => {
     if (!hydrated) return undefined;
     const timer = setTimeout(() => {
-      pulsefxApi.saveSettings({ enabled, preamp, headphoneEq, effectEnabled, effectAmounts, eq, preset, outputId }).catch(() => {});
+      pulsefxApi.saveSettings({ enabled, preamp, pitch, headphoneEq, effectEnabled, effectAmounts, eq, preset, outputId }).catch(() => {});
     }, 250);
     return () => clearTimeout(timer);
-  }, [hydrated, enabled, preamp, headphoneEq, effectEnabled, effectAmounts, eq, preset, outputId]);
+  }, [hydrated, enabled, preamp, pitch, headphoneEq, effectEnabled, effectAmounts, eq, preset, outputId]);
 
   useEffect(() => {
     if (!hydrated) return undefined;
@@ -227,6 +240,12 @@ function App() {
     run('preamp', next);
   };
 
+  const changePitch = (value) => {
+    const next = clamp(value, -5, 5);
+    setPitch(next);
+    run('pitch', next);
+  };
+
   const toggleHeadphoneEq = () => {
     const next = !headphoneEq;
     setHeadphoneEq(next);
@@ -281,7 +300,11 @@ function App() {
           <div className="focus-zone">
             <div className="focus-copy"><p className="kicker">{effectEnabled[activeEffect] ? 'ACTIVE EFFECT' : 'EFFECT OFF'}</p><h1>{active.label}</h1><p>{active.description}</p></div>
             <div className="dial-wrap"><div className="dial-halo" style={{ '--intensity': `${intensity * 3.6}deg` }}><div className="dial"><ActiveIcon size={34}/><strong>{intensity}%</strong><span>Intensity</span></div></div><input aria-label={`${active.label} intensity`} className="dial-range" type="range" min="0" max="100" value={intensity} onChange={(event) => updateEffectAmount(event.target.value)}/></div>
-            <div className="quick-controls"><label><span><small>PREAMP</small><strong>{preamp > 0 ? '+' : ''}{preamp.toFixed(1)} dB</strong></span><input type="range" min="-12" max="9" step="0.5" value={preamp} onChange={(event) => changePreamp(event.target.value)}/></label><button className={headphoneEq ? 'headphone-toggle on' : 'headphone-toggle'} onClick={toggleHeadphoneEq}><Headphones size={17}/><span><small>HEADPHONE EQ</small><strong>{headphoneEq ? 'Enabled' : 'Off'}</strong></span><i/></button></div>
+            <div className="quick-controls">
+              <label><span><small>PREAMP</small><strong>{preamp > 0 ? '+' : ''}{preamp.toFixed(1)} dB</strong></span><input type="range" min="-12" max="9" step="0.5" value={preamp} onChange={(event) => changePreamp(event.target.value)}/></label>
+              <label><span><small>PITCH</small><strong>{pitch > 0 ? '+' : ''}{pitch.toFixed(1)} st</strong></span><input aria-label="Pitch semitones" type="range" min="-5" max="5" step="0.1" value={pitch} onChange={(event) => changePitch(event.target.value)}/></label>
+              <button className={headphoneEq ? 'headphone-toggle on' : 'headphone-toggle'} onClick={toggleHeadphoneEq}><Headphones size={17}/><span><small>HEADPHONE EQ</small><strong>{headphoneEq ? 'Enabled' : 'Off'}</strong></span><i/></button>
+            </div>
           </div>
         </section>}
 
