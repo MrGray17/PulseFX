@@ -11,7 +11,8 @@
     "dev:electron": "wait-on http://127.0.0.1:5173 && electron . --dev",
     "dev": "concurrently -k -n web,desktop \"npm:dev:web\" \"npm:dev:electron\"",
     "build": "vite build",
-    "preview": "vite preview",
+    "preview": "vite preview --host 127.0.0.1 --port 4173",
+    "test:ui": "playwright test",
     "desktop": "electron .",
     "dist:win": "npm run build && electron-builder --win nsis"
   },
@@ -21,6 +22,7 @@
     "react-dom": "19.2.8"
   },
   "devDependencies": {
+    "@playwright/test": "1.62.1",
     "@vitejs/plugin-react": "6.1.0",
     "concurrently": "10.0.4",
     "electron": "43.4.0",
