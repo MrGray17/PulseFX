@@ -27,6 +27,12 @@ bool MultichannelBinaural::prepare(float sampleRate, std::size_t channels) noexc
     const float x = 2.0f * 3.14159265358979323846f * 3600.0f / sampleRate_;
     shadowAlpha_ = 1.0f - std::exp(-x);
     configurePaths();
+
+    // A format/device prepare starts from a neutral renderer. The bridge then
+    // reapplies its authoritative control snapshot. Without this reset, a wet
+    // amount from an earlier 5.1/7.1 device could leak into a later prepare even
+    // when the current control state has Surround disabled.
+    amountTarget_ = 0.0f;
     reset();
     return true;
 }
