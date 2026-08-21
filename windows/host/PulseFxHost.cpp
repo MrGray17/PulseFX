@@ -118,7 +118,18 @@ private:
             return false;
         }
 
-        const std::wstring nextDestination = choosePhysicalOutputId(preferredDestinationId_);
+        // In Auto mode, follow a real Windows physical default while one
+        // exists. Once PulseFX Output itself becomes the Windows default there
+        // is no longer a physical endpoint carrying the default flag, so keep
+        // the already-working physical sink as the temporary fallback instead
+        // of jumping to whichever endpoint happens to enumerate first. If that
+        // sink disappears, choosePhysicalOutputId() still falls through to the
+        // remaining available physical device.
+        std::wstring routingPreference = preferredDestinationId_;
+        if (routingPreference.empty() && !destinationId_.empty() && defaultRenderDeviceId() == nextSource) {
+            routingPreference = destinationId_;
+        }
+        const std::wstring nextDestination = choosePhysicalOutputId(routingPreference);
         if (nextDestination.empty() || nextDestination == nextSource) {
             relay_.stop();
             sourceId_ = nextSource;
