@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 #include <SetupAPI.h>
+#include <cfgmgr32.h>
 #include <devguid.h>
 #include <algorithm>
 #include <cwchar>
@@ -98,10 +99,74 @@ std::vector<SP_DEVINFO_DATA> matchingDevices(HDEVINFO set) {
     return matches;
 }
 
+DeviceInfoSet allMediaDevices() {
+    return DeviceInfoSet(SetupDiGetClassDevsW(&GUID_DEVCLASS_MEDIA, nullptr, nullptr, 0));
+}
+
 bool deviceExists() {
-    DeviceInfoSet set(SetupDiGetClassDevsW(&GUID_DEVCLASS_MEDIA, nullptr, nullptr, 0));
+    auto set = allMediaDevices();
     if (!set.valid()) return false;
     return !matchingDevices(set.get()).empty();
+}
+
+bool readServiceName(HDEVINFO set, SP_DEVINFO_DATA& device, std::wstring& service) {
+    DWORD type = 0;
+    DWORD required = 0;
+    SetupDiGetDeviceRegistryPropertyW(set, &device, SPDRP_SERVICE, &type, nullptr, 0, &required);
+    if (required == 0 || GetLastError() != ERROR_INSUFFICIENT_BUFFER) return false;
+
+    std::vector<BYTE> buffer(required + sizeof(wchar_t), 0);
+    if (!SetupDiGetDeviceRegistryPropertyW(
+            set,
+            &device,
+            SPDRP_SERVICE,
+            &type,
+            buffer.data(),
+            static_cast<DWORD>(buffer.size()),
+            nullptr) || type != REG_SZ) {
+        return false;
+    }
+    const auto* value = reinterpret_cast<const wchar_t*>(buffer.data());
+    service.assign(value);
+    return !service.empty();
+}
+
+bool deviceIsHealthy(HDEVINFO set, SP_DEVINFO_DATA& device, bool verbose) {
+    std::wstring service;
+    if (!readServiceName(set, device, service)) {
+        if (verbose) std::wcerr << L"PulseFX device exists but has no bound driver service.\n";
+        return false;
+    }
+
+    ULONG status = 0;
+    ULONG problem = 0;
+    const CONFIGRET result = CM_Get_DevNode_Status(&status, &problem, device.DevInst, 0);
+    if (result != CR_SUCCESS) {
+        if (verbose) std::wcerr << L"CM_Get_DevNode_Status failed with CONFIGRET " << result << L".\n";
+        return false;
+    }
+    if (problem != 0) {
+        if (verbose) std::wcerr << L"PulseFX device problem code: " << problem << L".\n";
+        return false;
+    }
+    if ((status & DN_STARTED) == 0) {
+        if (verbose) std::wcerr << L"PulseFX device is bound to service '" << service << L"' but is not started.\n";
+        return false;
+    }
+
+    if (verbose) {
+        std::wcout << L"PulseFX device healthy. Service: " << service << L".\n";
+    }
+    return true;
+}
+
+bool deviceHealthy() {
+    auto set = allMediaDevices();
+    if (!set.valid()) return false;
+    for (auto device : matchingDevices(set.get())) {
+        if (deviceIsHealthy(set.get(), device, true)) return true;
+    }
+    return false;
 }
 
 bool createRootDevice() {
@@ -158,7 +223,7 @@ bool createRootDevice() {
 }
 
 bool removeRootDevices() {
-    DeviceInfoSet set(SetupDiGetClassDevsW(&GUID_DEVCLASS_MEDIA, nullptr, nullptr, 0));
+    auto set = allMediaDevices();
     if (!set.valid()) {
         std::wcerr << windowsError(L"SetupDiGetClassDevs") << L'\n';
         return false;
@@ -201,16 +266,17 @@ bool removeRootDevices() {
 
 int wmain(int argc, wchar_t** argv) {
     if (argc != 2) {
-        std::wcerr << L"Usage: pulsefx_device_setup.exe <install|remove|check>\n";
+        std::wcerr << L"Usage: pulsefx_device_setup.exe <install|remove|check|exists>\n";
         return 64;
     }
 
     const std::wstring command(argv[1]);
     if (command == L"install") return createRootDevice() ? 0 : 1;
     if (command == L"remove") return removeRootDevices() ? 0 : 1;
-    if (command == L"check") return deviceExists() ? 0 : 2;
+    if (command == L"check") return deviceHealthy() ? 0 : 2;
+    if (command == L"exists") return deviceExists() ? 0 : 2;
 
-    std::wcerr << L"Unknown command. Expected install, remove, or check.\n";
+    std::wcerr << L"Unknown command. Expected install, remove, check, or exists.\n";
     return 64;
 }
 
