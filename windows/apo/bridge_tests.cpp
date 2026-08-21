@@ -11,9 +11,30 @@ void require(bool condition, const char* message) {
 void expectFinite(const std::vector<float>& audio) {
     for (float sample : audio) require(std::isfinite(sample), "bridge produced non-finite output");
 }
+
+bool closeTo(float a, float b, float tolerance = 1.0e-5f) {
+    return std::abs(a - b) <= tolerance;
+}
 }
 
 int main() {
+    // Restored settings may arrive before the audio device/format is prepared.
+    // Delta application must not optimize that first real application away.
+    pulsefx::windows::ApoProcessorBridge restoredBridge;
+    pulsefx::windows::ApoControlState restored{};
+    restored.processor.preampDb = -2.5f;
+    restored.processor.bass = 0.7f;
+    restored.processor.clarity = 0.4f;
+    restored.processor.pitchSemitones = 1.5f;
+    restored.eqDb[17] = 4.0f;
+    restoredBridge.applyControlState(restored);
+    require(restoredBridge.prepare(48000.0f, 2), "bridge failed to prepare after receiving restored controls");
+    require(closeTo(restoredBridge.processor().parameters().preampDb, -2.5f), "pre-prepare preamp was lost");
+    require(closeTo(restoredBridge.processor().parameters().bass, 0.7f), "pre-prepare bass was lost");
+    require(closeTo(restoredBridge.processor().parameters().clarity, 0.4f), "pre-prepare clarity was lost");
+    require(closeTo(restoredBridge.processor().parameters().pitchSemitones, 1.5f), "pre-prepare pitch was lost");
+    require(closeTo(restoredBridge.processor().equalizer().bandGain(17), 4.0f), "pre-prepare EQ state was lost");
+
     pulsefx::windows::ApoProcessorBridge bridge;
     require(!bridge.prepare(48000.0f, 5), "bridge accepted unsupported five-channel layout");
     require(bridge.prepare(48000.0f, 2), "bridge rejected supported stereo layout");
@@ -25,6 +46,11 @@ int main() {
     state.processor.space = 0.25f;
     state.eqDb[17] = 2.0f;
     bridge.applyControlState(state);
+
+    // Re-applying an identical snapshot is a valid no-op and must not disturb
+    // processor state or make output non-finite.
+    bridge.applyControlState(state);
+    require(closeTo(bridge.processor().equalizer().bandGain(17), 2.0f), "identical control snapshot changed EQ state");
 
     std::vector<float> stereo(4096 * 2, 0.0f);
     stereo[1000 * 2] = 0.8f;
