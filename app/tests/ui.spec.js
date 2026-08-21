@@ -117,10 +117,12 @@ async function setRange(locator, value) {
 }
 
 async function expectNativeCommand(page, name, argsPredicate = () => true) {
-  await expect.poll(async () => page.evaluate(({ commandName }) => {
-    const matching = window.__pulsefxCalls.filter((call) => call.kind === 'command' && call.name === commandName);
-    return matching.map((call) => call.args);
-  }, { commandName: name })).toSatisfy((calls) => calls.some(argsPredicate));
+  await expect.poll(async () => {
+    const calls = await page.evaluate((commandName) => window.__pulsefxCalls
+      .filter((call) => call.kind === 'command' && call.name === commandName)
+      .map((call) => call.args), name);
+    return calls.some(argsPredicate);
+  }).toBe(true);
 }
 
 async function getCalls(page, kind) {
@@ -139,7 +141,6 @@ test('all primary controls, tabs and desktop bridge actions work', async ({ page
   const pageErrors = [];
   await openReadyApp(page, pageErrors);
 
-  // Master processing and physical output.
   const master = page.locator('button.master');
   await expect(master).toContainText('On');
   await master.click();
@@ -152,7 +153,6 @@ test('all primary controls, tabs and desktop bridge actions work', async ({ page
   await page.getByLabel('Physical audio output').selectOption('headphones-1');
   await expectNativeCommand(page, 'output', (args) => args[0] === 'headphones-1');
 
-  // Enhancement controls.
   await page.getByRole('button', { name: '3D Surround' }).click();
   await expect(page.getByRole('heading', { name: '3D Surround' })).toBeVisible();
   await expectNativeCommand(page, 'surround', (args) => Number(args[0]) > 0);
@@ -164,7 +164,6 @@ test('all primary controls, tabs and desktop bridge actions work', async ({ page
   await setRange(page.locator('.quick-controls > label').first().locator('input'), 3);
   await expectNativeCommand(page, 'preamp', (args) => Number(args[0]) === 3);
 
-  // Equalizer tab, presets and individual band.
   await page.getByRole('button', { name: 'Equalizer' }).click();
   await expect(page.getByRole('heading', { name: '31-band equalizer' })).toBeVisible();
   await page.getByRole('button', { name: 'Flat' }).click();
@@ -173,7 +172,6 @@ test('all primary controls, tabs and desktop bridge actions work', async ({ page
   await expect(page.getByRole('button', { name: 'Custom' })).toBeVisible();
   await expectNativeCommand(page, 'eq', (args) => Number(args[0]) === 17 && Number(args[1]) === 5);
 
-  // Headphone catalog -> native profile -> enable path.
   await page.getByRole('button', { name: 'Headphones' }).click();
   await expect(page.getByRole('heading', { name: 'Headphone EQ' })).toBeVisible();
   await expect(page.getByRole('option', { name: 'Acme Studio One' })).toBeVisible();
@@ -184,7 +182,6 @@ test('all primary controls, tabs and desktop bridge actions work', async ({ page
   await page.getByRole('button', { name: 'Enabled' }).click();
   await expectNativeCommand(page, 'headphone_enable', (args) => args[0] === false);
 
-  // Per-app mixer.
   await page.getByRole('button', { name: 'Apps' }).click();
   await expect(page.getByRole('heading', { name: 'Applications' })).toBeVisible();
   await expect(page.getByText('Spotify')).toBeVisible();
@@ -195,7 +192,6 @@ test('all primary controls, tabs and desktop bridge actions work', async ({ page
   await page.getByRole('button', { name: 'Refresh' }).click();
   await expect.poll(async () => (await getCalls(page, 'command')).filter((call) => call.name === 'apps').length).toBeGreaterThan(1);
 
-  // Local player. Adding to an empty library must immediately activate the first track.
   await page.getByRole('button', { name: 'Player' }).click();
   await expect(page.getByRole('heading', { name: 'Your music' })).toBeVisible();
   await page.getByRole('button', { name: /Add audio/ }).click();
@@ -212,7 +208,6 @@ test('all primary controls, tabs and desktop bridge actions work', async ({ page
   await page.locator('.playlist-create button').last().click();
   await expect(page.locator('.playlist-tab.active')).toContainText('Library');
 
-  // Internet radio search/playback.
   await page.getByRole('button', { name: 'Radio' }).click();
   await expect(page.getByRole('heading', { name: 'Live stations' })).toBeVisible();
   await expect(page.getByRole('button', { name: /Pulse Radio/ })).toBeVisible();
@@ -224,7 +219,6 @@ test('all primary controls, tabs and desktop bridge actions work', async ({ page
   await expect.poll(async () => (await getCalls(page, 'searchRadio')).some((call) => call.query === 'lofi')).toBe(true);
   await expect(page.getByRole('button', { name: /Jazz lofi/ })).toBeVisible();
 
-  // Global hotkey editor/reset.
   await page.getByRole('button', { name: 'Settings' }).click();
   await expect(page.getByRole('heading', { name: 'Global hotkeys' })).toBeVisible();
   const firstShortcut = page.locator('.shortcut-row input').first();
@@ -233,7 +227,6 @@ test('all primary controls, tabs and desktop bridge actions work', async ({ page
   await page.getByRole('button', { name: 'Reset defaults' }).click();
   await expect(firstShortcut).toHaveValue('Control+Alt+B');
 
-  // Renderer receives tray/global-shortcut quick actions.
   await page.evaluate(() => window.__emitQuickAction({ action: 'tab', tab: 'equalizer' }));
   await expect(page.getByRole('heading', { name: '31-band equalizer' })).toBeVisible();
   await page.evaluate(() => window.__emitQuickAction({ action: 'preset', preset: 'Movie' }));
@@ -252,7 +245,7 @@ test('critical UI remains usable at the minimum supported window size', async ({
     await expect(page.locator('.content')).toBeVisible();
     const geometry = await page.locator('.content').evaluate((element) => {
       const rect = element.getBoundingClientRect();
-      return { left: rect.left, right: rect.right, width: rect.width, viewport: window.innerWidth };
+      return { left: rect.left, right: rect.right, viewport: window.innerWidth };
     });
     expect(geometry.left).toBeGreaterThanOrEqual(79);
     expect(geometry.right).toBeLessThanOrEqual(geometry.viewport + 1);
