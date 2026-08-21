@@ -1,6 +1,4 @@
 #pragma once
-#include <array>
-#include <cstddef>
 
 namespace pulsefx {
 
@@ -21,7 +19,13 @@ public:
     float process(float x) noexcept;
 
 private:
+    void setTarget(BiquadCoefficients coefficients, float sampleRate) noexcept;
+    void smoothCoefficients() noexcept;
+
     BiquadCoefficients c_{};
+    BiquadCoefficients target_{};
+    float smoothingCoeff_{0.0f};
+    bool smoothing_{false};
     float z1_{0.0f};
     float z2_{0.0f};
 };

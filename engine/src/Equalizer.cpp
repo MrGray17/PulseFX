@@ -4,7 +4,7 @@
 namespace pulsefx {
 
 void Equalizer::prepare(float sampleRate) noexcept {
-    sampleRate_ = sampleRate;
+    sampleRate_ = std::clamp(sampleRate, 8000.0f, 384000.0f);
     for (std::size_t i = 0; i < kFrequencies.size(); ++i) rebuild(i);
 }
 
@@ -14,9 +14,19 @@ void Equalizer::setBandGain(std::size_t band, float gainDb) noexcept {
     rebuild(band);
 }
 
+float Equalizer::bandGain(std::size_t band) const noexcept {
+    return band < gains_.size() ? gains_[band] : 0.0f;
+}
+
+void Equalizer::setFlat() noexcept {
+    gains_.fill(0.0f);
+    for (std::size_t i = 0; i < kFrequencies.size(); ++i) rebuild(i);
+}
+
 void Equalizer::rebuild(std::size_t band) noexcept {
     const float f = kFrequencies[band];
     const float gain = gains_[band];
+    constexpr float kGraphicQ = 3.8f;
     if (band == 0) {
         left_[band].setLowShelf(sampleRate_, f, 0.707f, gain);
         right_[band].setLowShelf(sampleRate_, f, 0.707f, gain);
@@ -24,8 +34,8 @@ void Equalizer::rebuild(std::size_t band) noexcept {
         left_[band].setHighShelf(sampleRate_, f, 0.707f, gain);
         right_[band].setHighShelf(sampleRate_, f, 0.707f, gain);
     } else {
-        left_[band].setPeaking(sampleRate_, f, 1.0f, gain);
-        right_[band].setPeaking(sampleRate_, f, 1.0f, gain);
+        left_[band].setPeaking(sampleRate_, f, kGraphicQ, gain);
+        right_[band].setPeaking(sampleRate_, f, kGraphicQ, gain);
     }
 }
 
