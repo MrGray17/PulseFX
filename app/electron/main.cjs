@@ -3,10 +3,11 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const readline = require('node:readline');
+const autoeq = require('./autoeq.cjs');
 
 const allowedCommands = new Set([
   'ping', 'status', 'devices', 'apps', 'quit', 'output', 'enabled', 'night',
-  'headphone_enable', 'preamp', 'bass', 'clarity', 'fidelity', 'spatial',
+  'headphone_enable', 'headphone_profile', 'preamp', 'bass', 'clarity', 'fidelity', 'spatial',
   'surround', 'ambience', 'dynamics', 'pitch', 'eq', 'app_volume', 'app_mute',
 ]);
 
@@ -185,7 +186,9 @@ function quoteHostArg(value) {
 
 async function commandNative(name, args = []) {
   if (!allowedCommands.has(name)) throw new Error('unsupported native host command');
-  if (!Array.isArray(args) || args.length > 40) throw new Error('invalid command arguments');
+  // 12 typed headphone filters require 2 + 12*4 = 50 arguments. Keep the
+  // protocol globally bounded while leaving two slots for future metadata.
+  if (!Array.isArray(args) || args.length > 52) throw new Error('invalid command arguments');
   for (const arg of args) {
     if (!['string', 'number', 'boolean'].includes(typeof arg)) throw new Error('invalid command argument type');
     if (String(arg).length > 4096) throw new Error('command argument is too long');
@@ -245,6 +248,24 @@ ipcMain.handle('pulsefx:command', (_event, request) => {
 });
 ipcMain.handle('pulsefx:settings:load', () => loadSettings());
 ipcMain.handle('pulsefx:settings:save', (_event, value) => saveSettings(value));
+ipcMain.handle('pulsefx:autoeq:list', async () => ({
+  revision: autoeq.REVISION,
+  models: await autoeq.loadIndex(app.getPath('userData')),
+}));
+ipcMain.handle('pulsefx:autoeq:apply', async (_event, modelPath) => {
+  if (typeof modelPath !== 'string' || modelPath.length === 0 || modelPath.length > 1024) {
+    throw new Error('invalid AutoEq model path');
+  }
+  const profile = await autoeq.loadProfile(app.getPath('userData'), modelPath);
+  await commandNative('headphone_profile', autoeq.nativeArgs(profile));
+  return {
+    ok: true,
+    revision: autoeq.REVISION,
+    model: profile.model,
+    preampDb: profile.preampDb,
+    filters: profile.filters.length,
+  };
+});
 
 app.whenReady().then(async () => {
   createWindow();
