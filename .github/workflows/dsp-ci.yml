@@ -39,12 +39,16 @@ jobs:
         run: ctest --test-dir build -C Debug --output-on-failure
 
   driver:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [x64, arm64]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - name: Build and validate PulseFX virtual audio driver
         shell: pwsh
-        run: ./windows/driver/build-driver-ci.ps1 -Configuration Release -Platform x64
+        run: ./windows/driver/build-driver-ci.ps1 -Configuration Release -Platform ${{ matrix.platform }}
       - name: Verify driver package
         shell: pwsh
         run: |
@@ -59,10 +63,13 @@ jobs:
           if (-not $manifest.Contains('render_formats=stereo,5.1-surround,7.1-surround')) {
             throw 'Driver manifest does not declare the multichannel format matrix.'
           }
+          if (-not $manifest.Contains('platform=${{ matrix.platform }}')) {
+            throw 'Driver manifest platform does not match the CI matrix.'
+          }
       - name: Upload unsigned driver package
         uses: actions/upload-artifact@v4
         with:
-          name: pulsefx-virtual-audio-driver-unsigned
+          name: pulsefx-virtual-audio-driver-${{ matrix.platform }}-unsigned
           path: windows/driver/out-ci/**
           if-no-files-found: error
           retention-days: 7
@@ -89,6 +96,10 @@ jobs:
         run: node --check electron/main.cjs
       - name: Check Electron preload
         run: node --check electron/preload.cjs
+      - name: Check AutoEq service
+        run: node --check electron/autoeq.cjs
+      - name: Test AutoEq parsing and native payloads
+        run: node electron/autoeq.test.cjs
       - name: Build renderer
         run: npm run build
 
