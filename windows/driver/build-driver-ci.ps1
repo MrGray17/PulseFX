@@ -99,6 +99,17 @@ if (-not (Test-Path $SampleRoot)) { throw "Pinned SimpleAudioSample was not foun
 
 $miniPairsPath = Join-Path $SampleRoot 'Source\Filters\minipairs.h'
 Replace-Required -Path $miniPairsPath -Old '#define g_cCaptureEndpoints (SIZEOF_ARRAY(g_CaptureEndpoints))' -New '#define g_cCaptureEndpoints 0'
+
+# g_cCaptureEndpoints is intentionally zero for PulseFX. Microsoft's sample uses
+# an unsigned loop variable with `i < g_cCaptureEndpoints`; once the count is a
+# literal zero, VS 2026 correctly diagnoses that comparison as always false and
+# /WX turns it into C4296. `i != count` is equivalent for this bounded count and
+# keeps compiler warnings strict without suppressing C4296 globally.
+$adapterPath = Join-Path $SampleRoot 'Source\Main\adapter.cpp'
+Replace-Required -Path $adapterPath `
+    -Old 'for (ULONG i = 0; i < g_cCaptureEndpoints; ++i, ++ppAeMiniports)' `
+    -New 'for (ULONG i = 0; i != g_cCaptureEndpoints; ++i, ++ppAeMiniports)'
+
 Set-PulseFxSpeakerFormats -SampleRoot $SampleRoot
 
 $infPath = Join-Path $SampleRoot 'Source\Main\SimpleAudioSample.inx'
@@ -131,20 +142,24 @@ $packagesRoot = Join-Path $RepoRoot 'packages'
 Invoke-Checked $nuget.Source @('restore', (Join-Path $RepoRoot 'packages.config'), '-PackagesDirectory', $packagesRoot) $RepoRoot
 Add-WdkNuGetToolsToPath -PackagesRoot $packagesRoot
 
-# Do not depend on the Windows-driver-samples Build-Samples.ps1 environment
-# discovery wrapper here. Hosted VS/WDK runner metadata has changed across
-# versions and the wrapper can fail before MSBuild ever sees the sample. Build
-# the pinned sample solution directly so this gate validates our actual driver.
+# Prefer 64-bit MSBuild. Modern WDK InfVerif tasks select their native helper
+# DLLs according to the MSBuild process architecture; the 32-bit host can fail
+# attempting to load x86\InfVerif.dll even though the NuGet WDK has valid x64
+# verifier components.
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
 $msbuild = $null
 if (Test-Path $vswhere) {
-    $msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
+    $msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\amd64\MSBuild.exe' | Select-Object -First 1
+    if (-not $msbuild) {
+        $msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
+    }
 }
 if (-not $msbuild) {
     $candidate = Get-Command msbuild.exe -ErrorAction SilentlyContinue
     if ($candidate) { $msbuild = $candidate.Source }
 }
 if (-not $msbuild) { throw 'MSBuild was not found on the Windows CI runner.' }
+Write-Host "MSBuild host: $msbuild"
 
 $solution = Join-Path $SampleRoot 'SimpleAudioSample.sln'
 if (-not (Test-Path $solution)) { throw "SimpleAudioSample.sln was not found at $solution" }
@@ -192,7 +207,8 @@ $manifest = @(
     "bits_per_sample=16",
     "compiler_warnings_as_errors=true",
     "hosted_prefast=disabled-unavailable",
-    "wdk_tools=nuget-discovered-x64-host"
+    "wdk_tools=nuget-discovered-x64-host",
+    "msbuild_host=amd64-preferred"
 ) -join "`r`n"
 Set-Content -LiteralPath (Join-Path $OutRoot 'PULSEFX_BUILD.txt') -Value $manifest -Encoding ascii
 
