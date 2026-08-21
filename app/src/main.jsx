@@ -441,6 +441,28 @@ function App() {
       setActiveTab('equalizer'); choosePreset(message.preset);
     } else if (message?.action === 'effect' && message.id === 'surround') {
       setEffectTo('surround', Boolean(message.enabled));
+    } else if (message?.action === 'open-files' && Array.isArray(message.files)) {
+      const launchFiles = message.files.slice(0, 100).filter((track) =>
+        typeof track?.id === 'string' && track.id.length > 0 && track.id.length <= 32767 &&
+        typeof track?.name === 'string' && track.name.length > 0 && track.name.length <= 500 &&
+        typeof track?.fileUrl === 'string' && track.fileUrl.startsWith('file:'));
+      if (launchFiles.length > 0) {
+        const launchIds = new Set(launchFiles.map((track) => track.id.toLocaleLowerCase()));
+        setPlaylists((current) => {
+          const existingLibrary = current.find((playlist) => playlist.id === 'library');
+          const library = existingLibrary ?? { id: 'library', name: 'Library', tracks: [] };
+          const remaining = library.tracks.filter((track) => !launchIds.has(String(track.id).toLocaleLowerCase()));
+          const nextLibrary = { ...library, tracks: [...launchFiles, ...remaining].slice(0, 2000) };
+          return existingLibrary
+            ? current.map((playlist) => playlist.id === 'library' ? nextLibrary : playlist)
+            : [nextLibrary, ...current];
+        });
+        setActivePlaylistId('library');
+        setTrackIndex(0);
+        setMediaKind('local');
+        setActiveStation(null);
+        setActiveTab('player');
+      }
     }
   }), [effectEnabled, effectAmounts, radioStations.length, radioLoading]);
 
