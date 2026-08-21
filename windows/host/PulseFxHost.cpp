@@ -290,13 +290,20 @@ private:
 
     std::string statusJsonLocked() const {
         const RelayStats stats = relay_.stats();
+        const bool routingActive = !sourceId_.empty() && defaultRenderDeviceId() == sourceId_;
+        std::string effectiveError = lastError_;
+        if (effectiveError.empty() && relay_.running() && !routingActive) {
+            effectiveError = "PulseFX Output is not the Windows default playback device; system audio may bypass processing";
+        }
+
         std::ostringstream out;
         out << "{\"type\":\"status\",\"ok\":true"
             << ",\"running\":" << (relay_.running() ? "true" : "false")
+            << ",\"routingActive\":" << (routingActive ? "true" : "false")
             << ",\"sourceId\":" << quoted(utf8FromWide(sourceId_))
             << ",\"destinationId\":" << quoted(utf8FromWide(destinationId_))
             << ",\"preferredDestinationId\":" << quoted(utf8FromWide(preferredDestinationId_))
-            << ",\"error\":" << quoted(lastError_)
+            << ",\"error\":" << quoted(effectiveError)
             << ",\"controls\":{"
             << "\"enabled\":" << (!control_.processor.bypass ? "true" : "false") << ','
             << "\"pitchSemitones\":" << control_.processor.pitchSemitones
