@@ -118,6 +118,10 @@ jobs:
         run: node --check electron/radio.cjs
       - name: Test radio URL and station sanitization
         run: node electron/radio.test.cjs
+      - name: Check associated media launch parser
+        run: node --check electron/mediaLaunch.cjs
+      - name: Test associated media launch parsing
+        run: node electron/mediaLaunch.test.cjs
       - name: Build renderer
         run: npm run build
       - name: Install Chromium for UI tests
