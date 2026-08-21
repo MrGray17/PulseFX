@@ -106,6 +106,18 @@ jobs:
         run: node electron/radio.test.cjs
       - name: Build renderer
         run: npm run build
+      - name: Install Chromium for UI tests
+        run: npx playwright install chromium
+      - name: Test every primary UI interaction
+        run: npm run test:ui
+      - name: Upload UI failure traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pulsefx-ui-test-results
+          path: app/test-results/**
+          if-no-files-found: ignore
+          retention-days: 7
 
   package-windows:
     strategy:
