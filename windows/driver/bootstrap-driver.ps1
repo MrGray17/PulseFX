@@ -77,10 +77,7 @@ Copy-Item -LiteralPath $SampleRoot -Destination $PreparedRoot -Recurse
 # Keep only the render endpoint at runtime. The Microsoft sample already uses
 # the no-offload/no-loopback KSPIN_WAVE_RENDER3 speaker topology.
 $miniPairsPath = Join-Path $PreparedRoot 'Source\Filters\minipairs.h'
-Replace-Required \
-    -Path $miniPairsPath \
-    -Old '#define g_cCaptureEndpoints (SIZEOF_ARRAY(g_CaptureEndpoints))' \
-    -New '#define g_cCaptureEndpoints 0'
+Replace-Required -Path $miniPairsPath -Old '#define g_cCaptureEndpoints (SIZEOF_ARRAY(g_CaptureEndpoints))' -New '#define g_cCaptureEndpoints 0'
 
 $infPath = Join-Path $PreparedRoot 'Source\Main\SimpleAudioSample.inx'
 Replace-Required -Path $infPath -Old 'ROOT\SimpleAudioSample' -New 'ROOT\PulseFXVirtualAudio'
