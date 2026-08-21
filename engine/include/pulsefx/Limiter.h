@@ -1,4 +1,5 @@
 #pragma once
+#include "TruePeakDetector.h"
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -42,6 +43,7 @@ private:
     std::array<std::uint64_t, kQueueCapacity> peakIndices_{};
     std::size_t peakHead_{0};
     std::size_t peakTail_{0};
+    TruePeakDetector truePeakDetector_{};
 };
 
 } // namespace pulsefx

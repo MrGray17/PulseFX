@@ -1,6 +1,7 @@
 #include "pulsefx/Equalizer.h"
 #include "pulsefx/HeadphoneCorrection.h"
 #include "pulsefx/Processor.h"
+#include "pulsefx/TruePeakDetector.h"
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -124,6 +125,48 @@ void testHeadphoneCorrectionProfileIsStable() {
     expectFinite(audio);
 }
 
+void testTruePeakDetectorCatchesInterSamplePeak() {
+    pulsefx::TruePeakDetector detector;
+    detector.prepare();
+    float samplePeak = 0.0f;
+    float reconstructedPeak = 0.0f;
+    for (std::size_t i = 0; i < 4096; ++i) {
+        const float phase = 2.0f * std::numbers::pi_v<float> * 12000.0f * static_cast<float>(i) / kSampleRate
+            + std::numbers::pi_v<float> * 0.25f;
+        const float sample = std::sin(phase);
+        samplePeak = std::max(samplePeak, std::abs(sample));
+        const float peak = detector.processStereo(sample, sample);
+        if (i > 128) reconstructedPeak = std::max(reconstructedPeak, peak);
+    }
+    require(samplePeak < 0.72f, "test signal does not create the expected inter-sample peak condition");
+    require(reconstructedPeak > 0.94f, "4x true-peak detector missed a known inter-sample peak");
+}
+
+void testLimiterContainsInterSamplePeak() {
+    pulsefx::Processor processor;
+    processor.prepare(kSampleRate);
+    constexpr std::size_t frames = 8192;
+    std::vector<float> audio(frames * 2, 0.0f);
+    for (std::size_t i = 0; i < frames; ++i) {
+        const float phase = 2.0f * std::numbers::pi_v<float> * 12000.0f * static_cast<float>(i) / kSampleRate
+            + std::numbers::pi_v<float> * 0.25f;
+        const float sample = std::sin(phase);
+        audio[i*2] = sample;
+        audio[i*2+1] = sample;
+    }
+    processor.processInterleaved(audio.data(), frames, 2);
+
+    pulsefx::TruePeakDetector outputDetector;
+    outputDetector.prepare();
+    float outputTruePeak = 0.0f;
+    const std::size_t latency = processor.limiter().latencySamples();
+    for (std::size_t i = 0; i < frames; ++i) {
+        const float peak = outputDetector.processStereo(audio[i*2], audio[i*2+1]);
+        if (i > latency + 256) outputTruePeak = std::max(outputTruePeak, peak);
+    }
+    require(outputTruePeak <= 0.905f, "limiter allowed an inter-sample peak beyond the safety margin");
+}
+
 void testExtremeControlsNeverProduceNan() {
     for (float sampleRate : {44100.0f, 48000.0f, 96000.0f}) {
         pulsefx::Processor processor;
@@ -154,6 +197,8 @@ int main() {
     test31BandEqualizerActuallyBoostsOneKhz();
     testSpaceKeepsMonoCentered();
     testHeadphoneCorrectionProfileIsStable();
+    testTruePeakDetectorCatchesInterSamplePeak();
+    testLimiterContainsInterSamplePeak();
     testExtremeControlsNeverProduceNan();
     std::cout << "PulseFX DSP quality tests passed\n";
 }

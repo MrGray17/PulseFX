@@ -16,6 +16,7 @@ add_library(pulsefx_dsp STATIC
     engine/src/Dynamics.cpp
     engine/src/StereoEnhancer.cpp
     engine/src/Limiter.cpp
+    engine/src/TruePeakDetector.cpp
     engine/src/Processor.cpp
 )
 

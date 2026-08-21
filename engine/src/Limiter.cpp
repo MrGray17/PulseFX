@@ -6,6 +6,7 @@ namespace pulsefx {
 
 void Limiter::prepare(float sampleRate) noexcept {
     sampleRate_ = std::clamp(sampleRate, 8000.0f, 384000.0f);
+    truePeakDetector_.prepare();
     updateTiming();
     reset();
 }
@@ -42,6 +43,7 @@ void Limiter::reset() noexcept {
     delayR_.fill(0.0f);
     peakValues_.fill(0.0f);
     peakIndices_.fill(0);
+    truePeakDetector_.reset();
 }
 
 void Limiter::pushPeak(float peak, std::uint64_t index) noexcept {
@@ -72,7 +74,7 @@ void Limiter::processStereo(float& left, float& right) noexcept {
 
     const float inputLeft = left;
     const float inputRight = right;
-    const float peak = std::max(std::abs(inputLeft), std::abs(inputRight));
+    const float peak = truePeakDetector_.processStereo(inputLeft, inputRight);
     pushPeak(peak, sampleIndex_);
 
     const std::uint64_t oldestVisible = sampleIndex_ > lookaheadSamples_
