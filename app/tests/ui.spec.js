@@ -109,8 +109,6 @@ async function installDesktopMock(page) {
 
 async function setRange(locator, value) {
   await locator.evaluate((element, nextValue) => {
-    // Bypass React's instance-level value tracker so the input event observes
-    // an actual value transition, exactly as a real pointer/key interaction does.
     const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
     descriptor.set.call(element, String(nextValue));
     element.dispatchEvent(new Event('input', { bubbles: true }));
@@ -197,7 +195,7 @@ test('all primary controls, tabs and desktop bridge actions work', async ({ page
   await page.getByRole('button', { name: 'Player' }).click();
   await expect(page.getByRole('heading', { name: 'Your music' })).toBeVisible();
   await page.getByRole('button', { name: /Add audio/ }).click();
-  await expect(page.getByText('Night Drive')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Night Drive' })).toBeVisible();
   await expect(page.locator('.transport-card.active')).toBeVisible();
   await expect(page.locator('.transport-meta strong')).toHaveText('Night Drive');
   await page.locator('.transport-play').click();
