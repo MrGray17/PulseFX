@@ -161,7 +161,7 @@ test('all primary controls, tabs and desktop bridge actions work', async ({ page
 
   await setRange(page.getByLabel('Pitch semitones'), 2.5);
   await expectNativeCommand(page, 'pitch', (args) => Number(args[0]) === 2.5);
-  await setRange(page.locator('.quick-controls > label').first().locator('input'), 3);
+  await setRange(page.getByLabel('Preamp'), 3);
   await expectNativeCommand(page, 'preamp', (args) => Number(args[0]) === 3);
 
   await page.getByRole('button', { name: 'Equalizer' }).click();
@@ -187,7 +187,7 @@ test('all primary controls, tabs and desktop bridge actions work', async ({ page
   await expect(page.getByText('Spotify')).toBeVisible();
   await setRange(page.getByLabel('Spotify volume'), 0.32);
   await expectNativeCommand(page, 'app_volume', (args) => Number(args[0]) === 4242 && Math.abs(Number(args[1]) - 0.32) < 0.001);
-  await page.locator('.app-row .mute-button').click();
+  await page.getByRole('button', { name: 'Mute Spotify' }).click();
   await expectNativeCommand(page, 'app_mute', (args) => Number(args[0]) === 4242 && args[1] === true);
   await page.getByRole('button', { name: 'Refresh' }).click();
   await expect.poll(async () => (await getCalls(page, 'command')).filter((call) => call.name === 'apps').length).toBeGreaterThan(1);
@@ -195,17 +195,17 @@ test('all primary controls, tabs and desktop bridge actions work', async ({ page
   await page.getByRole('button', { name: 'Player' }).click();
   await expect(page.getByRole('heading', { name: 'Your music' })).toBeVisible();
   await page.getByRole('button', { name: /Add audio/ }).click();
-  await expect(page.getByRole('button', { name: 'Night Drive' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Night Drive', exact: true })).toBeVisible();
   await expect(page.locator('.transport-card.active')).toBeVisible();
   await expect(page.locator('.transport-meta strong')).toHaveText('Night Drive');
-  await page.locator('.transport-play').click();
+  await page.getByRole('button', { name: 'Pause' }).click();
   await setRange(page.getByLabel('Player volume'), 0.44);
   await expect(page.getByLabel('Player volume')).toHaveValue('0.44');
 
-  await page.getByPlaceholder('New playlist').fill('Focus');
-  await page.getByPlaceholder('New playlist').press('Enter');
+  await page.getByLabel('New playlist name').fill('Focus');
+  await page.getByLabel('New playlist name').press('Enter');
   await expect(page.locator('.playlist-tab.active')).toContainText('Focus');
-  await page.locator('.playlist-create button').last().click();
+  await page.getByRole('button', { name: 'Delete active playlist' }).click();
   await expect(page.locator('.playlist-tab.active')).toContainText('Library');
 
   await page.getByRole('button', { name: 'Radio' }).click();
@@ -214,14 +214,14 @@ test('all primary controls, tabs and desktop bridge actions work', async ({ page
   await page.getByRole('button', { name: /Pulse Radio/ }).click();
   await expect(page.locator('.live-badge')).toContainText('LIVE');
   await expect.poll(async () => (await getCalls(page, 'recordRadioClick')).some((call) => call.stationuuid === 'station-1')).toBe(true);
-  await page.getByPlaceholder('Search station name…').fill('lofi');
-  await page.getByPlaceholder('Search station name…').press('Enter');
+  await page.getByLabel('Search radio stations').fill('lofi');
+  await page.getByLabel('Search radio stations').press('Enter');
   await expect.poll(async () => (await getCalls(page, 'searchRadio')).some((call) => call.query === 'lofi')).toBe(true);
   await expect(page.getByRole('button', { name: /Jazz lofi/ })).toBeVisible();
 
   await page.getByRole('button', { name: 'Settings' }).click();
   await expect(page.getByRole('heading', { name: 'Global hotkeys' })).toBeVisible();
-  const firstShortcut = page.locator('.shortcut-row input').first();
+  const firstShortcut = page.getByLabel('Toggle processing shortcut');
   await firstShortcut.press('Control+Shift+9');
   await expect(firstShortcut).toHaveValue('Control+Shift+9');
   await page.getByRole('button', { name: 'Reset defaults' }).click();
