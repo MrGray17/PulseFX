@@ -22,10 +22,25 @@ export const pulsefxApi = {
     if (!desktop) throw new Error('Headphone profiles are available only in the desktop app.');
     return desktop.applyHeadphoneProfile(modelPath);
   },
+  async openAudioFiles() {
+    if (!desktop) return [];
+    return desktop.openAudioFiles();
+  },
+  async searchRadio(query = '') {
+    if (!desktop) return [];
+    return desktop.searchRadio(query);
+  },
+  async recordRadioClick(stationuuid) {
+    if (!desktop) return false;
+    return desktop.recordRadioClick(stationuuid);
+  },
   onEvent(callback) {
     return desktop ? desktop.onEvent(callback) : () => {};
   },
   onHostState(callback) {
     return desktop ? desktop.onHostState(callback) : () => {};
+  },
+  onQuickAction(callback) {
+    return desktop ? desktop.onQuickAction(callback) : () => {};
   },
 };
