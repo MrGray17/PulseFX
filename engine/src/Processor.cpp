@@ -13,8 +13,11 @@ void Processor::prepare(float sampleRate) noexcept {
     equalizer_.prepare(sampleRate_);
     headphoneCorrection_.prepare(sampleRate_);
     bass_.prepare(sampleRate_);
+    fidelity_.prepare(sampleRate_);
     clarity_.prepare(sampleRate_);
     dynamics_.prepare(sampleRate_);
+    spatialSurround_.prepare(sampleRate_);
+    ambience_.prepare(sampleRate_);
     stereo_.prepare(sampleRate_);
     limiter_.prepare(sampleRate_);
     limiter_.setCeilingDb(-1.0f);
@@ -28,11 +31,29 @@ void Processor::setParameters(const ProcessorParameters& parameters) noexcept {
     parameters_.preampDb = std::clamp(parameters_.preampDb, -18.0f, 9.0f);
     parameters_.bass = std::clamp(parameters_.bass, 0.0f, 1.0f);
     parameters_.clarity = std::clamp(parameters_.clarity, 0.0f, 1.0f);
+    parameters_.fidelity = std::clamp(parameters_.fidelity, 0.0f, 1.0f);
     parameters_.space = std::clamp(parameters_.space, 0.0f, 1.0f);
+    parameters_.surround = std::clamp(parameters_.surround, 0.0f, 1.0f);
+    parameters_.ambience = std::clamp(parameters_.ambience, 0.0f, 1.0f);
     parameters_.dynamics = std::clamp(parameters_.dynamics, 0.0f, 1.0f);
+
+    // Match the reference product's documented effect compatibility while
+    // keeping transitions smoothed internally.
+    if (parameters_.surround > 0.0f) {
+        parameters_.space = 0.0f;
+        parameters_.ambience = 0.0f;
+        parameters_.nightMode = false;
+    } else if (parameters_.ambience > 0.0f) {
+        parameters_.space = 0.0f;
+        parameters_.nightMode = false;
+    }
+
     preampGain_.setTarget(dbToLinear(parameters_.preampDb));
     bass_.setAmount(parameters_.bass);
+    fidelity_.setAmount(parameters_.fidelity);
     clarity_.setAmount(parameters_.clarity);
+    spatialSurround_.setAmount(parameters_.surround);
+    ambience_.setAmount(parameters_.ambience);
     stereo_.setAmount(parameters_.space);
     dynamics_.setAmount(parameters_.dynamics);
     dynamics_.setNightMode(parameters_.nightMode);
@@ -43,8 +64,11 @@ void Processor::reset() noexcept {
     equalizer_.reset();
     headphoneCorrection_.reset();
     bass_.reset();
+    fidelity_.reset();
     clarity_.reset();
     dynamics_.reset();
+    spatialSurround_.reset();
+    ambience_.reset();
     stereo_.reset();
     limiter_.reset();
 }
@@ -61,9 +85,16 @@ void Processor::processInterleaved(float* samples, std::size_t frames, std::size
         equalizer_.processStereo(left, right);
         headphoneCorrection_.processStereo(left, right);
         bass_.processStereo(left, right);
+        fidelity_.processStereo(left, right);
         clarity_.processStereo(left, right);
         dynamics_.processStereo(left, right);
+
+        // All spatial processors keep their history warm. Compatibility rules
+        // above ensure only the requested path has a non-zero target amount.
+        spatialSurround_.processStereo(left, right);
+        ambience_.processStereo(left, right);
         stereo_.processStereo(left, right);
+
         limiter_.processStereo(left, right);
         leftOut = left;
         rightOut = right;
