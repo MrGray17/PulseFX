@@ -1,22 +1,25 @@
-name: DSP CI
+name: PulseFX CI
 
 on:
   push:
     paths:
       - 'engine/**'
       - 'windows/**'
+      - 'app/**'
       - 'CMakeLists.txt'
       - '.github/workflows/dsp-ci.yml'
   pull_request:
     paths:
       - 'engine/**'
       - 'windows/**'
+      - 'app/**'
       - 'CMakeLists.txt'
       - '.github/workflows/dsp-ci.yml'
 
 jobs:
-  test:
+  native:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -32,3 +35,21 @@ jobs:
         run: cmake --build build --config Debug
       - name: Test
         run: ctest --test-dir build -C Debug --output-on-failure
+
+  desktop:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install desktop dependencies
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Check Electron main process
+        run: node --check electron/main.cjs
+      - name: Check Electron preload
+        run: node --check electron/preload.cjs
+      - name: Build renderer
+        run: npm run build
