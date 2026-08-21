@@ -28,38 +28,46 @@ void Processor::prepare(float sampleRate) noexcept {
 }
 
 void Processor::setParameters(const ProcessorParameters& parameters) noexcept {
-    parameters_ = parameters;
-    parameters_.preampDb = std::clamp(parameters_.preampDb, -18.0f, 9.0f);
-    parameters_.bass = std::clamp(parameters_.bass, 0.0f, 1.0f);
-    parameters_.clarity = std::clamp(parameters_.clarity, 0.0f, 1.0f);
-    parameters_.fidelity = std::clamp(parameters_.fidelity, 0.0f, 1.0f);
-    parameters_.space = std::clamp(parameters_.space, 0.0f, 1.0f);
-    parameters_.surround = std::clamp(parameters_.surround, 0.0f, 1.0f);
-    parameters_.ambience = std::clamp(parameters_.ambience, 0.0f, 1.0f);
-    parameters_.dynamics = std::clamp(parameters_.dynamics, 0.0f, 1.0f);
-    parameters_.pitchSemitones = std::clamp(parameters_.pitchSemitones, -5.0f, 5.0f);
+    ProcessorParameters next = parameters;
+    next.preampDb = std::clamp(next.preampDb, -18.0f, 9.0f);
+    next.bass = std::clamp(next.bass, 0.0f, 1.0f);
+    next.clarity = std::clamp(next.clarity, 0.0f, 1.0f);
+    next.fidelity = std::clamp(next.fidelity, 0.0f, 1.0f);
+    next.space = std::clamp(next.space, 0.0f, 1.0f);
+    next.surround = std::clamp(next.surround, 0.0f, 1.0f);
+    next.ambience = std::clamp(next.ambience, 0.0f, 1.0f);
+    next.dynamics = std::clamp(next.dynamics, 0.0f, 1.0f);
+    next.pitchSemitones = std::clamp(next.pitchSemitones, -5.0f, 5.0f);
 
     // Match the reference product's documented effect compatibility while
     // keeping transitions smoothed internally.
-    if (parameters_.surround > 0.0f) {
-        parameters_.space = 0.0f;
-        parameters_.ambience = 0.0f;
-        parameters_.nightMode = false;
-    } else if (parameters_.ambience > 0.0f) {
-        parameters_.space = 0.0f;
-        parameters_.nightMode = false;
+    if (next.surround > 0.0f) {
+        next.space = 0.0f;
+        next.ambience = 0.0f;
+        next.nightMode = false;
+    } else if (next.ambience > 0.0f) {
+        next.space = 0.0f;
+        next.nightMode = false;
     }
 
-    preampGain_.setTarget(dbToLinear(parameters_.preampDb));
-    bass_.setAmount(parameters_.bass);
-    fidelity_.setAmount(parameters_.fidelity);
-    clarity_.setAmount(parameters_.clarity);
-    pitchShifter_.setSemitones(parameters_.pitchSemitones);
-    spatialSurround_.setAmount(parameters_.surround);
-    ambience_.setAmount(parameters_.ambience);
-    stereo_.setAmount(parameters_.space);
-    dynamics_.setAmount(parameters_.dynamics);
-    dynamics_.setNightMode(parameters_.nightMode);
+    const ProcessorParameters previous = parameters_;
+    parameters_ = next;
+
+    // Control snapshots arrive at audio packet boundaries. Avoid touching DSP
+    // modules whose effective parameter did not change: several modules rebuild
+    // biquad targets and therefore perform trig/pow work in their setters.
+    // Delta-application keeps normal live UI automation extremely small while
+    // preserving the existing coefficient smoothing/state of unchanged stages.
+    if (previous.preampDb != next.preampDb) preampGain_.setTarget(dbToLinear(next.preampDb));
+    if (previous.bass != next.bass) bass_.setAmount(next.bass);
+    if (previous.fidelity != next.fidelity) fidelity_.setAmount(next.fidelity);
+    if (previous.clarity != next.clarity) clarity_.setAmount(next.clarity);
+    if (previous.pitchSemitones != next.pitchSemitones) pitchShifter_.setSemitones(next.pitchSemitones);
+    if (previous.surround != next.surround) spatialSurround_.setAmount(next.surround);
+    if (previous.ambience != next.ambience) ambience_.setAmount(next.ambience);
+    if (previous.space != next.space) stereo_.setAmount(next.space);
+    if (previous.dynamics != next.dynamics) dynamics_.setAmount(next.dynamics);
+    if (previous.nightMode != next.nightMode) dynamics_.setNightMode(next.nightMode);
 }
 
 void Processor::reset() noexcept {
