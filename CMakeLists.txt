@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(PULSEFX_BUILD_TESTS "Build PulseFX DSP tests" ON)
+option(PULSEFX_BUILD_APO_BRIDGE "Build the portable Windows APO-to-DSP bridge" ON)
 
 add_library(pulsefx_dsp STATIC
     engine/src/Biquad.cpp
@@ -23,6 +24,12 @@ add_library(pulsefx_dsp STATIC
 target_include_directories(pulsefx_dsp PUBLIC engine/include)
 target_compile_definitions(pulsefx_dsp PRIVATE _USE_MATH_DEFINES)
 
+if(PULSEFX_BUILD_APO_BRIDGE)
+  add_library(pulsefx_apo_bridge STATIC windows/apo/PulseFxApoBridge.cpp)
+  target_include_directories(pulsefx_apo_bridge PUBLIC windows/apo)
+  target_link_libraries(pulsefx_apo_bridge PUBLIC pulsefx_dsp)
+endif()
+
 if(MSVC)
   target_compile_options(pulsefx_dsp PRIVATE /W4 /permissive-)
 else()
@@ -39,4 +46,10 @@ if(PULSEFX_BUILD_TESTS)
     target_compile_options(pulsefx_dsp_tests PRIVATE -Wall -Wextra -Wpedantic)
   endif()
   add_test(NAME pulsefx_dsp_tests COMMAND pulsefx_dsp_tests)
+
+  if(PULSEFX_BUILD_APO_BRIDGE)
+    add_executable(pulsefx_apo_bridge_tests windows/apo/bridge_tests.cpp)
+    target_link_libraries(pulsefx_apo_bridge_tests PRIVATE pulsefx_apo_bridge)
+    add_test(NAME pulsefx_apo_bridge_tests COMMAND pulsefx_apo_bridge_tests)
+  endif()
 endif()
