@@ -53,3 +53,36 @@ jobs:
         run: node --check electron/preload.cjs
       - name: Build renderer
         run: npm run build
+
+  package-windows:
+    runs-on: windows-latest
+    needs: [native, desktop]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure native Release build
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPULSEFX_BUILD_WASAPI_RELAY=ON
+      - name: Build native Release host
+        run: cmake --build build --config Release --target pulsefx_audio_host
+      - name: Install desktop dependencies
+        working-directory: app
+        run: npm install --no-audit --no-fund
+      - name: Build NSIS installer
+        working-directory: app
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run dist:win
+      - name: Verify packaged native host
+        shell: pwsh
+        run: |
+          $hostPath = 'app/release/win-unpacked/resources/native/pulsefx_audio_host.exe'
+          if (-not (Test-Path $hostPath)) { throw "Packaged native host is missing: $hostPath" }
+          $installer = Get-ChildItem -Path 'app/release' -Filter 'PulseFX-Setup-*.exe' | Select-Object -First 1
+          if (-not $installer) { throw 'PulseFX installer was not produced.' }
+          Write-Host "Validated installer: $($installer.FullName)"
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: pulsefx-windows-installer
+          path: app/release/PulseFX-Setup-*.exe
+          if-no-files-found: error
+          retention-days: 7
