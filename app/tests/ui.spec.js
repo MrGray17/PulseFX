@@ -7,6 +7,8 @@ async function installDesktopMock(page) {
     const push = (kind, payload = {}) => { calls.push({ kind, ...payload }); };
 
     window.__pulsefxCalls = calls;
+    window.__emitEvent = (message) => listeners.event.forEach((callback) => callback(message));
+    window.__emitHostState = (message) => listeners.host.forEach((callback) => callback(message));
     window.__emitQuickAction = (message) => listeners.quick.forEach((callback) => callback(message));
 
     window.pulsefx = {
@@ -14,7 +16,7 @@ async function installDesktopMock(page) {
         push('command', { name, args });
         if (name === 'status') {
           return {
-            type: 'status', ok: true, running: true, error: '',
+            type: 'status', ok: true, running: true, routingActive: true, error: '',
             sourceId: 'pulsefx-output', destinationId: 'speakers-1',
             stats: { underruns: 0, overruns: 0, capturedFrames: 4096, renderedFrames: 4096, bufferedFrames: 256, controlRevision: 10, clockCorrectionPpm: 0 },
           };
@@ -37,7 +39,7 @@ async function installDesktopMock(page) {
         }
         if (name === 'output') {
           return {
-            type: 'status', ok: true, running: true, error: '',
+            type: 'status', ok: true, running: true, routingActive: true, error: '',
             sourceId: 'pulsefx-output', destinationId: args[0] === 'auto' ? 'speakers-1' : args[0],
             stats: { underruns: 0, overruns: 0, bufferedFrames: 256, clockCorrectionPpm: 0 },
           };
@@ -231,6 +233,103 @@ test('all primary controls, tabs and desktop bridge actions work', async ({ page
   await expect(page.getByRole('heading', { name: '31-band equalizer' })).toBeVisible();
   await page.evaluate(() => window.__emitQuickAction({ action: 'preset', preset: 'Movie' }));
   await expect(page.getByRole('button', { name: 'Movie' })).toHaveClass(/active/);
+
+  expect(pageErrors).toEqual([]);
+});
+
+test('every enhancement mode, preset and EQ band remains wired', async ({ page }) => {
+  const pageErrors = [];
+  await openReadyApp(page, pageErrors);
+
+  // Default Spatial is on. Enabling Surround must disable it and every other
+  // incompatible effect rather than allowing an unsupported combination.
+  await page.getByRole('button', { name: '3D Surround' }).click();
+  await expectNativeCommand(page, 'surround', (args) => Number(args[0]) > 0);
+  await expectNativeCommand(page, 'spatial', (args) => Number(args[0]) === 0);
+
+  await page.getByRole('button', { name: 'Ambience' }).click();
+  await expectNativeCommand(page, 'ambience', (args) => Number(args[0]) > 0);
+  await expectNativeCommand(page, 'surround', (args) => Number(args[0]) === 0);
+
+  await page.getByRole('button', { name: 'Night Mode' }).click();
+  await expectNativeCommand(page, 'night', (args) => args[0] === true);
+  await expectNativeCommand(page, 'ambience', (args) => Number(args[0]) === 0);
+
+  await page.getByRole('button', { name: 'Fidelity' }).click();
+  await expectNativeCommand(page, 'fidelity', (args) => Number(args[0]) === 0);
+  await page.getByRole('button', { name: 'Fidelity' }).click();
+  await expectNativeCommand(page, 'fidelity', (args) => Number(args[0]) > 0);
+
+  await page.getByRole('button', { name: 'Spatial' }).click();
+  await expectNativeCommand(page, 'spatial', (args) => Number(args[0]) > 0);
+
+  await page.getByRole('button', { name: 'Equalizer' }).click();
+  const presets = ['Flat','Pop','Loud','Classical','Party','Reggae','Movie','Hip-hop','Jazz','Deep','Dubstep','Trap'];
+  for (const preset of presets) {
+    const button = page.getByRole('button', { name: preset, exact: true });
+    await button.click();
+    await expect(button).toHaveClass(/active/);
+  }
+
+  const bands = ['20','25','31','40','50','63','80','100','125','160','200','250','315','400','500','630','800','1k','1.25k','1.6k','2k','2.5k','3.15k','4k','5k','6.3k','8k','10k','12.5k','16k','20k'];
+  for (let index = 0; index < bands.length; index += 1) {
+    const value = index % 2 === 0 ? 1 : -1;
+    await setRange(page.getByLabel(`${bands[index]} Hz`), value);
+  }
+  const eqCalls = (await getCalls(page, 'command')).filter((call) => call.name === 'eq');
+  for (let index = 0; index < bands.length; index += 1) {
+    const expected = index % 2 === 0 ? 1 : -1;
+    expect(eqCalls.some((call) => Number(call.args[0]) === index && Number(call.args[1]) === expected)).toBe(true);
+  }
+
+  expect(pageErrors).toEqual([]);
+});
+
+test('player edge cases, output exclusion and health errors are handled', async ({ page }) => {
+  const pageErrors = [];
+  await openReadyApp(page, pageErrors);
+
+  // The virtual PulseFX endpoint must never be offered as its own physical sink.
+  const output = page.getByLabel('Physical audio output');
+  const values = await output.locator('option').evaluateAll((options) => options.map((option) => option.value));
+  expect(values).not.toContain('pulsefx-output');
+  expect(values).toContain('speakers-1');
+  expect(values).toContain('headphones-1');
+
+  // Enabling headphone correction without a selected model must redirect the
+  // user to the model picker instead of enabling an empty correction bank.
+  await page.locator('.headphone-toggle').click();
+  await expect(page.getByRole('heading', { name: 'Headphone EQ' })).toBeVisible();
+  await expect(page.getByText('Choose a headphone model before enabling correction.')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Player' }).click();
+  await page.getByRole('button', { name: /Add audio/ }).click();
+  await expect(page.getByRole('button', { name: 'Night Drive', exact: true })).toHaveCount(1);
+  await expect(page.getByRole('button', { name: 'Sunrise', exact: true })).toHaveCount(1);
+
+  // Re-importing the exact same file set is de-duplicated by stable file id.
+  await page.getByRole('button', { name: /Add audio/ }).click();
+  await expect(page.getByRole('button', { name: 'Night Drive', exact: true })).toHaveCount(1);
+  await expect(page.getByRole('button', { name: 'Sunrise', exact: true })).toHaveCount(1);
+
+  await expect(page.locator('.transport-meta strong')).toHaveText('Night Drive');
+  await page.getByRole('button', { name: 'Next track' }).click();
+  await expect(page.locator('.transport-meta strong')).toHaveText('Sunrise');
+  await page.getByRole('button', { name: 'Previous track' }).click();
+  await expect(page.locator('.transport-meta strong')).toHaveText('Night Drive');
+
+  await page.evaluate(() => window.__emitHostState({ running: false, error: 'Simulated native host failure' }));
+  await expect(page.getByText('Simulated native host failure')).toBeVisible();
+  await expect(page.getByText('Audio issue')).toBeVisible();
+  await page.evaluate(() => window.__emitHostState({ running: true, error: '' }));
+  await expect(page.getByText('Simulated native host failure')).toHaveCount(0);
+
+  await page.evaluate(() => window.__emitEvent({
+    type: 'status', ok: true, running: true, routingActive: false,
+    error: 'PulseFX Output is not the Windows default playback device; system audio may bypass processing',
+    stats: { underruns: 0, overruns: 0, bufferedFrames: 128, clockCorrectionPpm: 0 },
+  }));
+  await expect(page.getByText(/system audio may bypass processing/)).toBeVisible();
 
   expect(pageErrors).toEqual([]);
 });
