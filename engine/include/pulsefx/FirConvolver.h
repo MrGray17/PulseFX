@@ -7,7 +7,10 @@ namespace pulsefx {
 
 class FirConvolver {
 public:
-    static constexpr std::size_t kMaxTaps = 128;
+    // 256 taps is enough for many measured HRIR sets while remaining small
+    // enough for the current direct-convolution implementation. Long HRIRs
+    // will move to partitioned convolution in a later optimization pass.
+    static constexpr std::size_t kMaxTaps = 256;
 
     void setImpulse(const float* impulse, std::size_t taps) noexcept {
         taps_ = std::clamp<std::size_t>(taps, 1, kMaxTaps);
