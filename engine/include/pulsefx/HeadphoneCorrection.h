@@ -18,6 +18,17 @@ struct CorrectionBand {
     float gainDb{0.0f};
     CorrectionFilterType type{CorrectionFilterType::Peaking};
     bool enabled{false};
+
+    constexpr CorrectionBand() = default;
+    constexpr CorrectionBand(float frequencyValue, float qValue, float gainValue, bool enabledValue) noexcept
+        : frequency(frequencyValue), q(qValue), gainDb(gainValue), type(CorrectionFilterType::Peaking), enabled(enabledValue) {}
+    constexpr CorrectionBand(
+        float frequencyValue,
+        float qValue,
+        float gainValue,
+        CorrectionFilterType typeValue,
+        bool enabledValue) noexcept
+        : frequency(frequencyValue), q(qValue), gainDb(gainValue), type(typeValue), enabled(enabledValue) {}
 };
 
 struct HeadphoneProfile {
