@@ -32,6 +32,9 @@
     "appId": "dev.pulsefx.desktop",
     "productName": "PulseFX",
     "asar": true,
+    "directories": {
+      "output": "release"
+    },
     "files": [
       "dist/**/*",
       "electron/**/*",
