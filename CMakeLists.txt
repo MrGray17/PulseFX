@@ -12,8 +12,6 @@ option(PULSEFX_ENABLE_MYSOFA "Build AES69/SOFA measured-HRTF loading through lib
 
 include(FetchContent)
 
-# High-quality realtime pitch shifting. Pin the exact upstream revision so a
-# PulseFX release cannot silently change its spectral algorithm underneath us.
 FetchContent_Declare(
   signalsmith_stretch
   GIT_REPOSITORY https://github.com/Signalsmith-Audio/signalsmith-stretch.git
@@ -43,8 +41,6 @@ target_include_directories(pulsefx_dsp PUBLIC engine/include)
 target_compile_definitions(pulsefx_dsp PRIVATE _USE_MATH_DEFINES)
 target_link_libraries(pulsefx_dsp PRIVATE signalsmith-stretch)
 
-# Portable command protocol used between the desktop UI and native audio host.
-# Keeping it platform-independent lets Linux CI exercise parsing/escaping too.
 add_library(pulsefx_host_protocol STATIC
     windows/host/HostProtocol.cpp
 )
@@ -85,6 +81,7 @@ if(PULSEFX_BUILD_WASAPI_RELAY)
 
   add_executable(pulsefx_audio_host
     windows/host/PulseFxHost.cpp
+    windows/host/HeadphoneProfileCommand.cpp
     windows/host/AudioDeviceCatalog.cpp
     windows/host/AudioSessionMixer.cpp
   )
@@ -141,6 +138,15 @@ if(PULSEFX_BUILD_TESTS)
     add_executable(pulsefx_apo_bridge_tests windows/apo/bridge_tests.cpp)
     target_link_libraries(pulsefx_apo_bridge_tests PRIVATE pulsefx_apo_bridge)
     add_test(NAME pulsefx_apo_bridge_tests COMMAND pulsefx_apo_bridge_tests)
+
+    add_executable(
+      pulsefx_headphone_profile_tests
+      windows/host/HeadphoneProfileCommand.cpp
+      windows/host/headphone_profile_tests.cpp
+    )
+    target_include_directories(pulsefx_headphone_profile_tests PRIVATE windows/host windows/apo)
+    target_link_libraries(pulsefx_headphone_profile_tests PRIVATE pulsefx_apo_bridge)
+    add_test(NAME pulsefx_headphone_profile_tests COMMAND pulsefx_headphone_profile_tests)
   endif()
 
   if(PULSEFX_BUILD_WASAPI_RELAY)
