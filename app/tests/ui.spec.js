@@ -90,7 +90,6 @@ async function installDesktopMock(page) {
       onQuickAction(callback) { listeners.quick.push(callback); return () => { listeners.quick = listeners.quick.filter((item) => item !== callback); }; },
     };
 
-    // Deterministic media behavior: UI tests verify wiring/state, not network codecs.
     Object.defineProperty(HTMLMediaElement.prototype, 'paused', {
       configurable: true,
       get() { return this.__pulsefxPaused !== false; },
@@ -110,7 +109,10 @@ async function installDesktopMock(page) {
 
 async function setRange(locator, value) {
   await locator.evaluate((element, nextValue) => {
-    element.value = String(nextValue);
+    // Bypass React's instance-level value tracker so the input event observes
+    // an actual value transition, exactly as a real pointer/key interaction does.
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+    descriptor.set.call(element, String(nextValue));
     element.dispatchEvent(new Event('input', { bubbles: true }));
     element.dispatchEvent(new Event('change', { bubbles: true }));
   }, value);
