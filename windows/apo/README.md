@@ -1,27 +1,56 @@
-# PulseFX Windows APO layer
+# PulseFX Windows audio layer
 
-This directory is the Windows integration boundary. The DSP engine must remain independent of COM, registry, PnP and UI code.
+This directory is the Windows DSP/APO boundary. The DSP engine must remain independent of COM, registry, PnP, device enumeration and UI code.
 
-## Intended insertion point
+## Target architecture
 
-PulseFX targets a **render endpoint effect (EFX)** for the user's selected playback endpoint. Windows applies an EFX to every stream using that endpoint, after the render mix. This gives the system-wide behavior PulseFX needs while keeping the DSP in a user-mode APO.
+For a Boom-3D-style Windows experience, PulseFX should expose its own **virtual render endpoint** and remain the Windows-selected output device while the app forwards processed audio to a user-selected physical device.
 
-The current `ApoProcessorBridge` is the tested seam between the Windows shell and `pulsefx::Processor`. It rejects unsupported formats instead of partially processing them. Stereo float32 is the first supported graph format; multichannel virtualization will be added deliberately rather than faked.
+```text
+Windows apps
+    |
+    v
+PulseFX virtual render endpoint (SysVAD-derived WaveRT device)
+    |
+    v
+PulseFX APO / DSP bridge
+    |
+    v
+PulseFX user-mode relay
+    |
+    v
+selected physical headphones / speakers / HDMI / USB DAC
+```
 
-## Windows shell still to implement and validate on Windows
+This matches the product behavior we are targeting more closely than globally attaching PulseFX to an unrelated physical audio driver. It also gives the app explicit control over the downstream device while Windows continues to route applications into the PulseFX endpoint.
 
-The COM/WDK wrapper must be built from the current Microsoft SysVAD APO pattern and must provide, at minimum:
+## Current state
+
+`ApoProcessorBridge` is the tested seam between a Windows audio shell and `pulsefx::Processor`. It rejects unsupported formats instead of partially processing them. Stereo float32 is the first supported realtime format.
+
+The portable DSP bridge remains useful inside the virtual endpoint even though the product boundary has moved: the virtual driver/APO owns the Windows-facing render graph, while a separate relay owns the physical destination.
+
+## Windows pieces still to implement and validate on a Windows WDK machine
+
+### Virtual endpoint / driver
+
+Use Microsoft's current SysVAD `TabletAudioSample` as the WDM/WaveRT reference. The PulseFX package needs a root-enumerated virtual render device with componentized driver packaging, appropriate INF files, and test signing during development.
+
+### APO component
+
+The componentized APO should provide, at minimum:
 
 - `CBaseAudioProcessingObject`-based COM object.
 - `IAudioProcessingObjectRT::APOProcess` forwarding float32 frames to `ApoProcessorBridge::process`.
-- Format negotiation and `LockForProcess` that call `ApoProcessorBridge::prepare` only for formats we really support.
-- `GetLatency` reporting the lookahead limiter latency.
-- `IAudioSystemEffects3` state exposure on Windows 11.
-- Componentized APO registration (`Class=AudioProcessingObject`) and an audio-driver extension association for the machine's actual output device.
-- Fail-open behavior: unsupported format or invalid state must bypass, never mute the endpoint.
+- Format negotiation and `LockForProcess` that only accept formats PulseFX actually supports.
+- `GetLatency` reporting the DSP lookahead latency.
+- `IAudioSystemEffects3` state exposure on Windows 11 where appropriate.
+- Fail-open behavior: invalid state must bypass rather than mute audio.
 
-Microsoft's componentized model does not permit one globally registered APO to attach itself to unrelated audio drivers. The install package therefore has to associate PulseFX with the target audio device/driver on this PC.
+### User-mode relay
+
+The relay captures the PulseFX virtual render stream, sends it through the selected processing/output path, and renders to the physical destination with device hot-swap and recovery handling. It must never select the PulseFX virtual endpoint as its own downstream sink.
 
 ## Reference implementation
 
-Use Microsoft's `Windows-driver-samples/audio/sysvad/APO/SwapAPO` and `TabletAudioSample/ComponentizedApoSample.inx` as API/packaging references. Do not copy their sample effect logic into the DSP engine.
+Use Microsoft's `Windows-driver-samples/audio/sysvad` projects as API/packaging references, particularly `TabletAudioSample`, `APO/SwapAPO`, and the componentized INF examples. PulseFX DSP itself remains original.
