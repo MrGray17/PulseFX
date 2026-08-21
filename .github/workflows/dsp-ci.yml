@@ -108,34 +108,65 @@ jobs:
         run: npm run build
 
   package-windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            cmake_arch: x64
+            driver_platform: x64
+          - arch: arm64
+            cmake_arch: ARM64
+            driver_platform: arm64
     runs-on: windows-latest
     needs: [native, driver, desktop, quality-lab]
     steps:
       - uses: actions/checkout@v4
-      - name: Configure native Release build
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPULSEFX_BUILD_WASAPI_RELAY=ON
+      - name: Download matching virtual audio driver
+        uses: actions/download-artifact@v4
+        with:
+          name: pulsefx-virtual-audio-driver-${{ matrix.driver_platform }}-unsigned
+          path: app/driver-package
+      - name: Verify downloaded driver package
+        shell: pwsh
+        run: |
+          $inf = Get-ChildItem -Path 'app/driver-package' -Recurse -Filter '*.inf' | Select-Object -First 1
+          $sys = Get-ChildItem -Path 'app/driver-package' -Recurse -Filter '*.sys' | Select-Object -First 1
+          $cat = Get-ChildItem -Path 'app/driver-package' -Recurse -Filter '*.cat' | Select-Object -First 1
+          if (-not $inf -or -not $sys -or -not $cat) { throw 'Architecture-matched driver package is incomplete.' }
+      - name: Configure native Release host
+        run: cmake -S . -B build -A ${{ matrix.cmake_arch }} -DPULSEFX_BUILD_WASAPI_RELAY=ON
       - name: Build native Release host
         run: cmake --build build --config Release --target pulsefx_audio_host
       - name: Install desktop dependencies
         working-directory: app
         run: npm install --no-audit --no-fund
-      - name: Build NSIS installer
+      - name: Build renderer
+        working-directory: app
+        run: npm run build
+      - name: Build architecture-specific NSIS installer
         working-directory: app
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npm run dist:win
-      - name: Verify packaged native host
+        run: npx electron-builder --win nsis --${{ matrix.arch }}
+      - name: Verify packaged host and driver
         shell: pwsh
         run: |
-          $hostPath = 'app/release/win-unpacked/resources/native/pulsefx_audio_host.exe'
-          if (-not (Test-Path $hostPath)) { throw "Packaged native host is missing: $hostPath" }
-          $installer = Get-ChildItem -Path 'app/release' -Filter 'PulseFX-Setup-*.exe' | Select-Object -First 1
-          if (-not $installer) { throw 'PulseFX installer was not produced.' }
+          $host = Get-ChildItem -Path 'app/release' -Recurse -Filter 'pulsefx_audio_host.exe' |
+            Where-Object { $_.FullName -match '[\\/]resources[\\/]native[\\/]' } |
+            Select-Object -First 1
+          $driver = Get-ChildItem -Path 'app/release' -Recurse -Filter '*.inf' |
+            Where-Object { $_.FullName -match '[\\/]resources[\\/]driver[\\/]' } |
+            Select-Object -First 1
+          $installer = Get-ChildItem -Path 'app/release' -Filter 'PulseFX-Setup-*-${{ matrix.arch }}.exe' | Select-Object -First 1
+          if (-not $host) { throw 'Packaged native host is missing.' }
+          if (-not $driver) { throw 'Packaged virtual audio driver is missing.' }
+          if (-not $installer) { throw 'Architecture-specific PulseFX installer was not produced.' }
           Write-Host "Validated installer: $($installer.FullName)"
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
-          name: pulsefx-windows-installer
-          path: app/release/PulseFX-Setup-*.exe
+          name: pulsefx-windows-installer-${{ matrix.arch }}
+          path: app/release/PulseFX-Setup-*-${{ matrix.arch }}.exe
           if-no-files-found: error
           retention-days: 7
