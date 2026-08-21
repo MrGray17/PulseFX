@@ -16,6 +16,15 @@ contextBridge.exposeInMainWorld('pulsefx', {
   applyHeadphoneProfile(modelPath) {
     return ipcRenderer.invoke('pulsefx:autoeq:apply', modelPath);
   },
+  openAudioFiles() {
+    return ipcRenderer.invoke('pulsefx:media:open');
+  },
+  searchRadio(query = '') {
+    return ipcRenderer.invoke('pulsefx:radio:search', query);
+  },
+  recordRadioClick(stationuuid) {
+    return ipcRenderer.invoke('pulsefx:radio:click', stationuuid);
+  },
   onEvent(callback) {
     if (typeof callback !== 'function') return () => {};
     const listener = (_event, payload) => callback(payload);
@@ -27,5 +36,11 @@ contextBridge.exposeInMainWorld('pulsefx', {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('pulsefx:host-state', listener);
     return () => ipcRenderer.removeListener('pulsefx:host-state', listener);
+  },
+  onQuickAction(callback) {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('pulsefx:quick-action', listener);
+    return () => ipcRenderer.removeListener('pulsefx:quick-action', listener);
   },
 });
