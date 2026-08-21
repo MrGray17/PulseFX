@@ -29,6 +29,7 @@ let hostStartup = null;
 let restarting = null;
 let appQuitting = false;
 const pending = [];
+const pendingQuickActions = [];
 
 function settingsPath() {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -103,12 +104,36 @@ function broadcast(channel, payload) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
 }
 
+function rendererCanReceiveQuickActions() {
+  return Boolean(
+    mainWindow && !mainWindow.isDestroyed() &&
+    mainWindow.webContents && !mainWindow.webContents.isDestroyed() &&
+    !mainWindow.webContents.isLoadingMainFrame()
+  );
+}
+
+function flushQuickActions() {
+  if (!rendererCanReceiveQuickActions()) return;
+  while (pendingQuickActions.length) {
+    mainWindow.webContents.send('pulsefx:quick-action', pendingQuickActions.shift());
+  }
+}
+
+function dispatchQuickAction(message) {
+  if (!message || typeof message !== 'object') return;
+  if (rendererCanReceiveQuickActions()) {
+    mainWindow.webContents.send('pulsefx:quick-action', message);
+    return;
+  }
+  pendingQuickActions.push(message);
+}
+
 function showWindow(tab) {
   if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+  if (tab) dispatchQuickAction({ action: 'tab', tab });
   mainWindow.show();
   mainWindow.restore();
   mainWindow.focus();
-  if (tab) broadcast('pulsefx:quick-action', { action: 'tab', tab });
 }
 
 function updateQuickState(name, args) {
@@ -259,9 +284,14 @@ function quickToggleProcessing() {
 
 function quickToggleSurround() {
   const enabled = !quickState.surround;
-  broadcast('pulsefx:quick-action', { action: 'effect', id: 'surround', enabled });
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    commandNative('surround', [enabled ? 0.48 : 0]).catch(() => {});
+  const action = { action: 'effect', id: 'surround', enabled };
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    dispatchQuickAction(action);
+  } else {
+    // Apply audio immediately without opening a window, and keep the explicit
+    // state queued so a later renderer recreation cannot display stale controls.
+    pendingQuickActions.push(action);
+    commandNative('surround', [enabled ? 0.48 : 0]).catch((error) => broadcast('pulsefx:host-state', { running: false, error: error.message }));
   }
 }
 
@@ -292,7 +322,13 @@ function trayTemplate() {
     { label: '3D Surround', type: 'checkbox', checked: quickState.surround, click: quickToggleSurround },
     {
       label: 'Equalizer Presets', submenu: ['Flat','Pop','Loud','Classical','Party','Reggae','Movie','Hip-hop','Jazz','Deep','Dubstep','Trap']
-        .map((preset) => ({ label: preset, click: () => { showWindow('equalizer'); broadcast('pulsefx:quick-action', { action: 'preset', preset }); } })),
+        .map((preset) => ({
+          label: preset,
+          click: () => {
+            showWindow('equalizer');
+            dispatchQuickAction({ action: 'preset', preset });
+          },
+        })),
     },
     { type: 'separator' },
     { label: 'Apps Volume Controller', click: () => showWindow('apps') },
@@ -334,13 +370,19 @@ function createWindow() {
     },
   });
 
-  mainWindow.once('ready-to-show', () => mainWindow.show());
+  const createdWindow = mainWindow;
+  createdWindow.webContents.once('did-finish-load', () => {
+    if (mainWindow === createdWindow) flushQuickActions();
+  });
+  createdWindow.once('ready-to-show', () => createdWindow.show());
   if (process.argv.includes('--dev')) {
-    mainWindow.loadURL('http://127.0.0.1:5173');
+    createdWindow.loadURL('http://127.0.0.1:5173');
   } else {
-    mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
+    createdWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
   }
-  mainWindow.on('closed', () => { mainWindow = null; });
+  createdWindow.on('closed', () => {
+    if (mainWindow === createdWindow) mainWindow = null;
+  });
 }
 
 ipcMain.handle('pulsefx:command', (_event, request) => {
