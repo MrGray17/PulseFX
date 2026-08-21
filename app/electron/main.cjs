@@ -26,6 +26,7 @@ let tray = null;
 let hostProcess = null;
 let hostReadline = null;
 let hostStartup = null;
+let hostGeneration = 0;
 let restarting = null;
 let appQuitting = false;
 const pending = [];
@@ -100,6 +101,21 @@ function rejectStartup(error) {
   reject(error);
 }
 
+function invalidateHostProtocol(error) {
+  rejectStartup(error);
+  rejectPending(error);
+
+  const staleProcess = hostProcess;
+  hostProcess = null;
+  hostGeneration += 1;
+  hostReadline?.close();
+  hostReadline = null;
+
+  if (staleProcess && !staleProcess.killed) staleProcess.kill();
+  broadcast('pulsefx:host-state', { running: false, error: error.message });
+  scheduleRestart();
+}
+
 function broadcast(channel, payload) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
 }
@@ -171,19 +187,23 @@ async function startHost() {
     startupReject = reject;
   });
   const startupTimer = setTimeout(() => {
-    rejectStartup(new Error('PulseFX native host did not become ready in time'));
-    hostProcess?.kill();
+    invalidateHostProtocol(new Error('PulseFX native host did not become ready in time'));
   }, 5000);
   hostStartup = { promise: startupPromise, resolve: startupResolve, reject: startupReject, timer: startupTimer };
 
-  hostProcess = spawn(executable, [], {
+  const generation = ++hostGeneration;
+  const spawnedProcess = spawn(executable, [], {
     windowsHide: true,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
+  hostProcess = spawnedProcess;
 
-  hostProcess.stdin.setDefaultEncoding('utf8');
-  hostReadline = readline.createInterface({ input: hostProcess.stdout });
-  hostReadline.on('line', (line) => {
+  spawnedProcess.stdin.setDefaultEncoding('utf8');
+  const spawnedReadline = readline.createInterface({ input: spawnedProcess.stdout });
+  hostReadline = spawnedReadline;
+  spawnedReadline.on('line', (line) => {
+    if (hostProcess !== spawnedProcess || hostGeneration !== generation) return;
+
     let message;
     try {
       message = JSON.parse(line);
@@ -214,29 +234,35 @@ async function startHost() {
     }
   });
 
-  hostProcess.stderr.on('data', (chunk) => {
+  spawnedProcess.stderr.on('data', (chunk) => {
+    if (hostProcess !== spawnedProcess || hostGeneration !== generation) return;
     broadcast('pulsefx:host-log', { stream: 'stderr', message: chunk.toString('utf8') });
   });
 
-  hostProcess.once('error', (error) => {
+  spawnedProcess.once('error', (error) => {
+    if (hostProcess !== spawnedProcess || hostGeneration !== generation) return;
     rejectStartup(error);
     rejectPending(error);
     broadcast('pulsefx:host-state', { running: false, error: error.message });
   });
 
-  hostProcess.once('exit', (code, signal) => {
+  spawnedProcess.once('exit', (code, signal) => {
+    spawnedReadline.close();
+    if (hostProcess !== spawnedProcess || hostGeneration !== generation) return;
+
     const error = new Error(`PulseFX native host exited (${code ?? signal ?? 'unknown'})`);
     rejectStartup(error);
     rejectPending(error);
-    hostReadline?.close();
-    hostReadline = null;
+    if (hostReadline === spawnedReadline) hostReadline = null;
     hostProcess = null;
     broadcast('pulsefx:host-state', { running: false, error: error.message });
     scheduleRestart();
   });
 
   await startupPromise;
-  broadcast('pulsefx:host-state', { running: true, error: '' });
+  if (hostProcess === spawnedProcess && hostGeneration === generation) {
+    broadcast('pulsefx:host-state', { running: true, error: '' });
+  }
 }
 
 function quoteHostArg(value) {
@@ -260,16 +286,30 @@ async function commandNative(name, args = []) {
   await startHost();
   if (!hostProcess?.stdin?.writable) throw new Error('PulseFX native host is unavailable');
   const line = [name, ...args.map(quoteHostArg)].join(' ');
+  const commandProcess = hostProcess;
+  const commandGeneration = hostGeneration;
 
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
-      const index = pending.findIndex((entry) => entry.resolve === resolve);
-      if (index >= 0) pending.splice(index, 1);
-      reject(new Error(`native host timed out handling ${name}`));
+      // The protocol is FIFO and intentionally tiny. Once a response deadline
+      // is missed, a late reply can no longer be safely distinguished from the
+      // next command's reply. Reject every request tied to this stream and
+      // restart the host instead of ever risking cross-command desynchronization.
+      if (hostProcess === commandProcess && hostGeneration === commandGeneration) {
+        invalidateHostProtocol(new Error(`native host timed out handling ${name}`));
+      } else {
+        const index = pending.findIndex((entry) => entry.resolve === resolve);
+        if (index >= 0) pending.splice(index, 1);
+        reject(new Error(`native host generation changed while handling ${name}`));
+      }
     }, 4000);
-    pending.push({ name, args, resolve, reject, timer });
-    hostProcess.stdin.write(`${line}\n`, 'utf8', (error) => {
+    pending.push({ name, args, resolve, reject, timer, generation: commandGeneration });
+    commandProcess.stdin.write(`${line}\n`, 'utf8', (error) => {
       if (!error) return;
+      if (hostProcess === commandProcess && hostGeneration === commandGeneration) {
+        invalidateHostProtocol(error);
+        return;
+      }
       const index = pending.findIndex((entry) => entry.resolve === resolve);
       if (index >= 0) pending.splice(index, 1);
       clearTimeout(timer);
