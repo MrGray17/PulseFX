@@ -1,0 +1,114 @@
+[CmdletBinding()]
+param(
+    [ValidateSet('Debug', 'Release')]
+    [string]$Configuration = 'Release',
+    [ValidateSet('x64', 'arm64')]
+    [string]$Platform = 'x64'
+)
+
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+
+$UpstreamRevision = '717778a20ba4dd2440fe609f69153a1f8a64f597'
+$UpstreamUrl = 'https://github.com/microsoft/Windows-driver-samples.git'
+$WorkRoot = Join-Path $PSScriptRoot '.ci-work'
+$RepoRoot = Join-Path $WorkRoot 'Windows-driver-samples'
+$SampleRoot = Join-Path $RepoRoot 'audio\simpleaudiosample'
+$OutRoot = Join-Path $PSScriptRoot 'out-ci'
+
+function Invoke-Checked {
+    param(
+        [Parameter(Mandatory)] [string]$FilePath,
+        [Parameter(Mandatory)] [string[]]$Arguments,
+        [string]$WorkingDirectory
+    )
+    if ($WorkingDirectory) { Push-Location $WorkingDirectory }
+    try {
+        & $FilePath @Arguments
+        if ($LASTEXITCODE -ne 0) { throw "$FilePath exited with code $LASTEXITCODE" }
+    } finally {
+        if ($WorkingDirectory) { Pop-Location }
+    }
+}
+
+function Replace-Required {
+    param(
+        [Parameter(Mandatory)] [string]$Path,
+        [Parameter(Mandatory)] [string]$Old,
+        [Parameter(Mandatory)] [string]$New
+    )
+    $text = Get-Content -LiteralPath $Path -Raw
+    if (-not $text.Contains($Old)) { throw "Expected text was not found in $Path`: $Old" }
+    Set-Content -LiteralPath $Path -Value ($text.Replace($Old, $New)) -Encoding utf8
+}
+
+if (Test-Path $WorkRoot) { Remove-Item -LiteralPath $WorkRoot -Recurse -Force }
+New-Item -ItemType Directory -Path $WorkRoot -Force | Out-Null
+
+Invoke-Checked git.exe @('clone', '--filter=blob:none', '--no-checkout', $UpstreamUrl, $RepoRoot)
+Invoke-Checked git.exe @('-C', $RepoRoot, 'fetch', '--depth', '1', 'origin', $UpstreamRevision)
+Invoke-Checked git.exe @('-C', $RepoRoot, 'checkout', '--detach', $UpstreamRevision)
+Invoke-Checked git.exe @('-C', $RepoRoot, 'submodule', 'update', '--init', '--depth', '1')
+
+if (-not (Test-Path $SampleRoot)) { throw "Pinned SimpleAudioSample was not found at $SampleRoot" }
+
+$miniPairsPath = Join-Path $SampleRoot 'Source\Filters\minipairs.h'
+Replace-Required -Path $miniPairsPath -Old '#define g_cCaptureEndpoints (SIZEOF_ARRAY(g_CaptureEndpoints))' -New '#define g_cCaptureEndpoints 0'
+
+$infPath = Join-Path $SampleRoot 'Source\Main\SimpleAudioSample.inx'
+Replace-Required -Path $infPath -Old 'ROOT\SimpleAudioSample' -New 'ROOT\PulseFXVirtualAudio'
+Replace-Required -Path $infPath -Old 'ProviderName = "TODO-Set-Provider"' -New 'ProviderName = "PulseFX"'
+Replace-Required -Path $infPath -Old 'MfgName      = "TODO-Set-Manufacturer"' -New 'MfgName      = "PulseFX"'
+Replace-Required -Path $infPath -Old 'SIMPLEAUDIOSAMPLE_SA.DeviceDesc="Virtual Audio Device (WDM) - Simple Audio Sample"' -New 'SIMPLEAUDIOSAMPLE_SA.DeviceDesc="PulseFX Output"'
+Replace-Required -Path $infPath -Old 'SimpleAudioSample.SvcDesc="Virtual Audio Device (WDM) - Simple Audio Sample Driver"' -New 'SimpleAudioSample.SvcDesc="PulseFX Virtual Audio Driver"'
+Replace-Required -Path $infPath -Old 'SIMPLEAUDIOSAMPLE.WaveSpeaker.szPname="Simple Audio Sample Wave Speaker"' -New 'SIMPLEAUDIOSAMPLE.WaveSpeaker.szPname="PulseFX Output Wave"'
+Replace-Required -Path $infPath -Old 'SIMPLEAUDIOSAMPLE.TopologySpeaker.szPname="Simple Audio Sample Topology Speaker"' -New 'SIMPLEAUDIOSAMPLE.TopologySpeaker.szPname="PulseFX Output Topology"'
+
+$infLines = Get-Content -LiteralPath $infPath
+$filteredInfLines = $infLines | Where-Object { $_ -notmatch '^AddInterface=.*(WaveMicArray1|TopologyMicArray1)' }
+Set-Content -LiteralPath $infPath -Value $filteredInfLines -Encoding utf8
+
+$nuget = Get-Command nuget.exe -ErrorAction SilentlyContinue
+if (-not $nuget) { throw 'nuget.exe is required for the WDK NuGet restore.' }
+Invoke-Checked $nuget.Source @('restore', (Join-Path $RepoRoot 'packages.config'), '-PackagesDirectory', (Join-Path $RepoRoot 'packages')) $RepoRoot
+
+$buildScript = Join-Path $RepoRoot 'Build-Samples.ps1'
+if (-not (Test-Path $buildScript)) { throw "Build-Samples.ps1 was not found at $buildScript" }
+
+Push-Location $RepoRoot
+try {
+    & $buildScript -Samples 'audio.simpleaudiosample' -Configurations $Configuration -Platforms $Platform -RunMode NuGet -ThrottleLimit 2
+    if ($LASTEXITCODE -ne 0) { throw "Build-Samples.ps1 exited with code $LASTEXITCODE" }
+} finally {
+    Pop-Location
+}
+
+$driver = Get-ChildItem -LiteralPath $SampleRoot -Recurse -File -Filter 'SimpleAudioSample.sys' |
+    Where-Object { $_.FullName -match '[\\/]package[\\/]' } |
+    Sort-Object LastWriteTimeUtc -Descending |
+    Select-Object -First 1
+if (-not $driver) { throw 'Driver build completed but no packaged SimpleAudioSample.sys was found.' }
+
+$packageDir = $driver.Directory.FullName
+if (Test-Path $OutRoot) { Remove-Item -LiteralPath $OutRoot -Recurse -Force }
+New-Item -ItemType Directory -Path $OutRoot -Force | Out-Null
+Copy-Item -Path (Join-Path $packageDir '*') -Destination $OutRoot -Recurse -Force
+
+$builtInf = Get-ChildItem -LiteralPath $OutRoot -File -Filter '*.inf' | Select-Object -First 1
+if (-not $builtInf) { throw 'Built driver package does not contain an INF.' }
+$infText = Get-Content -LiteralPath $builtInf.FullName -Raw
+if (-not $infText.Contains('ROOT\PulseFXVirtualAudio')) { throw 'Built INF is missing the PulseFX hardware ID.' }
+if (-not $infText.Contains('PulseFX Output')) { throw 'Built INF is missing PulseFX output branding.' }
+if ($infText -match 'KSCATEGORY_CAPTURE.*WaveMicArray1') { throw 'Built INF still publishes the sample capture endpoint.' }
+
+$manifest = @(
+    "upstream=$UpstreamUrl",
+    "revision=$UpstreamRevision",
+    "configuration=$Configuration",
+    "platform=$Platform",
+    "hardware_id=ROOT\PulseFXVirtualAudio",
+    "capture_endpoints=disabled"
+) -join "`r`n"
+Set-Content -LiteralPath (Join-Path $OutRoot 'PULSEFX_BUILD.txt') -Value $manifest -Encoding ascii
+
+Write-Host "PulseFX driver package validated at $OutRoot"
