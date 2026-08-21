@@ -1,6 +1,7 @@
 #ifdef _WIN32
 
 #include "WasapiRelay.h"
+#include "ClockDriftController.h"
 #include <Audioclient.h>
 #include <Mmdeviceapi.h>
 #include <Windows.h>
@@ -116,6 +117,8 @@ public:
         return count;
     }
 
+    std::size_t sizeFrames() const noexcept { return sizeFrames_; }
+
 private:
     std::vector<float> samples_;
     std::size_t capacityFrames_{1};
@@ -134,6 +137,8 @@ struct WasapiRelay::Impl {
     std::atomic<std::uint64_t> overruns{0};
     std::atomic<std::uint64_t> capturedFrames{0};
     std::atomic<std::uint64_t> renderedFrames{0};
+    std::atomic<std::uint64_t> bufferedFrames{0};
+    std::atomic<float> clockCorrectionPpm{0.0f};
 
     bool start(
         const std::wstring& sourceDeviceId,
@@ -148,6 +153,8 @@ struct WasapiRelay::Impl {
         overruns.store(0, std::memory_order_relaxed);
         capturedFrames.store(0, std::memory_order_relaxed);
         renderedFrames.store(0, std::memory_order_relaxed);
+        bufferedFrames.store(0, std::memory_order_relaxed);
+        clockCorrectionPpm.store(0.0f, std::memory_order_relaxed);
 
         std::promise<bool> ready;
         auto readyFuture = ready.get_future();
@@ -247,7 +254,8 @@ struct WasapiRelay::Impl {
                 AUDCLNT_SHAREMODE_SHARED,
                 AUDCLNT_STREAMFLAGS_EVENTCALLBACK |
                     AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM |
-                    AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+                    AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY |
+                    AUDCLNT_STREAMFLAGS_RATEADJUST,
                 0, 0, sourceFormat.value, nullptr);
         }
         if (SUCCEEDED(hr)) hr = destinationClient->SetEventHandle(renderEvent.get());
@@ -273,6 +281,9 @@ struct WasapiRelay::Impl {
         const std::size_t ringFrames = std::max<std::size_t>(
             static_cast<std::size_t>(sourceFormat.value->nSamplesPerSec / 2),
             std::max<std::size_t>(sourceBufferFrames, destinationBufferFrames) * 8);
+        const std::size_t targetBufferedFrames = std::max<std::size_t>(
+            static_cast<std::size_t>(sourceFormat.value->nSamplesPerSec * 0.060),
+            static_cast<std::size_t>(destinationBufferFrames) * 4);
         StereoRingBuffer ring(ringFrames);
         std::vector<float> captureScratch(static_cast<std::size_t>(sourceBufferFrames) * 2, 0.0f);
 
@@ -291,6 +302,41 @@ struct WasapiRelay::Impl {
             return;
         }
 
+        // IAudioClockAdjustment must not be driven from the realtime audio
+        // processing path. A low-frequency MTA control thread observes ring
+        // fill and gently trims the physical render stream rate instead.
+        ComPtr<IAudioClient> clockClient = destinationClient;
+        const float nominalSampleRate = static_cast<float>(sourceFormat.value->nSamplesPerSec);
+        std::thread clockWorker([
+            this,
+            clockClient,
+            nominalSampleRate,
+            targetBufferedFrames]() mutable {
+            const HRESULT clockCom = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+            if (FAILED(clockCom)) return;
+
+            ComPtr<IAudioClockAdjustment> adjustment;
+            const HRESULT serviceResult = clockClient->GetService(
+                IID_PPV_ARGS(adjustment.GetAddressOf()));
+            if (SUCCEEDED(serviceResult) && adjustment) {
+                ClockDriftController controller;
+                controller.prepare(nominalSampleRate, targetBufferedFrames);
+                while (WaitForSingleObject(stopEvent, 200) == WAIT_TIMEOUT) {
+                    const auto buffered = static_cast<std::size_t>(
+                        bufferedFrames.load(std::memory_order_relaxed));
+                    const float adjustedRate = controller.update(buffered);
+                    if (SUCCEEDED(adjustment->SetSampleRate(adjustedRate))) {
+                        clockCorrectionPpm.store(
+                            controller.correctionPpm(),
+                            std::memory_order_relaxed);
+                    }
+                }
+                adjustment->SetSampleRate(nominalSampleRate);
+                clockCorrectionPpm.store(0.0f, std::memory_order_relaxed);
+            }
+            CoUninitialize();
+        });
+
         running.store(true, std::memory_order_release);
         signalReady(true);
 
@@ -303,6 +349,7 @@ struct WasapiRelay::Impl {
                 continue;
             }
             if (waitResult == WAIT_FAILED || waitResult > WAIT_OBJECT_0 + 2) {
+                SetEvent(stopEvent);
                 keepRunning = false;
                 continue;
             }
@@ -331,6 +378,7 @@ struct WasapiRelay::Impl {
                     if (ring.push(captureScratch.data(), frames)) {
                         overruns.fetch_add(1, std::memory_order_relaxed);
                     }
+                    bufferedFrames.store(ring.sizeFrames(), std::memory_order_relaxed);
                     capturedFrames.fetch_add(frames, std::memory_order_relaxed);
                 }
             }
@@ -346,6 +394,7 @@ struct WasapiRelay::Impl {
                 if (FAILED(renderClient->GetBuffer(available, &rawOutput)) || !rawOutput) continue;
                 auto* output = reinterpret_cast<float*>(rawOutput);
                 const std::size_t copied = ring.pop(output, available);
+                bufferedFrames.store(ring.sizeFrames(), std::memory_order_relaxed);
                 if (copied < available) {
                     std::fill(
                         output + copied * 2,
@@ -358,6 +407,8 @@ struct WasapiRelay::Impl {
             }
         }
 
+        SetEvent(stopEvent);
+        if (clockWorker.joinable()) clockWorker.join();
         sourceClient->Stop();
         destinationClient->Stop();
         running.store(false, std::memory_order_release);
@@ -388,6 +439,8 @@ RelayStats WasapiRelay::stats() const noexcept {
         impl_->overruns.load(std::memory_order_relaxed),
         impl_->capturedFrames.load(std::memory_order_relaxed),
         impl_->renderedFrames.load(std::memory_order_relaxed),
+        impl_->bufferedFrames.load(std::memory_order_relaxed),
+        impl_->clockCorrectionPpm.load(std::memory_order_relaxed),
     };
 }
 
