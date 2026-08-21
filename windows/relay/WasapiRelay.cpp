@@ -57,9 +57,9 @@ HRESULT resolveRenderDevice(
     ComPtr<IMMDevice>& device) {
     if (!enumerator) return E_POINTER;
     if (deviceId.empty()) {
-        return enumerator->GetDefaultAudioEndpoint(eRender, eMultimedia, &device);
+        return enumerator->GetDefaultAudioEndpoint(eRender, eMultimedia, device.GetAddressOf());
     }
-    return enumerator->GetDevice(deviceId.c_str(), &device);
+    return enumerator->GetDevice(deviceId.c_str(), device.GetAddressOf());
 }
 
 std::wstring readDeviceId(IMMDevice* device) {
@@ -144,6 +144,11 @@ struct WasapiRelay::Impl {
         stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
         if (!stopEvent) return false;
 
+        underruns.store(0, std::memory_order_relaxed);
+        overruns.store(0, std::memory_order_relaxed);
+        capturedFrames.store(0, std::memory_order_relaxed);
+        renderedFrames.store(0, std::memory_order_relaxed);
+
         std::promise<bool> ready;
         auto readyFuture = ready.get_future();
         worker = std::thread(
@@ -171,7 +176,7 @@ struct WasapiRelay::Impl {
         const RelayConfig& config,
         std::promise<bool> ready) noexcept {
         bool readySignalled = false;
-        const auto signalReady = [&](bool value) mutable {
+        auto signalReady = [&](bool value) {
             if (!readySignalled) {
                 ready.set_value(value);
                 readySignalled = true;
@@ -209,13 +214,17 @@ struct WasapiRelay::Impl {
 
         HRESULT hr = CoCreateInstance(
             __uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
-            IID_PPV_ARGS(&enumerator));
+            IID_PPV_ARGS(enumerator.GetAddressOf()));
         if (SUCCEEDED(hr)) hr = resolveRenderDevice(enumerator.Get(), sourceDeviceId, sourceDevice);
         if (SUCCEEDED(hr)) hr = resolveRenderDevice(enumerator.Get(), destinationDeviceId, destinationDevice);
         if (SUCCEEDED(hr) && readDeviceId(sourceDevice.Get()) == readDeviceId(destinationDevice.Get())) {
-            hr = E_INVALIDARG; // Prevent a PulseFX -> PulseFX feedback loop.
+            hr = E_INVALIDARG;
         }
-        if (SUCCEEDED(hr)) hr = sourceDevice->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, &sourceClient);
+        if (SUCCEEDED(hr)) {
+            hr = sourceDevice->Activate(
+                __uuidof(IAudioClient), CLSCTX_ALL, nullptr,
+                reinterpret_cast<void**>(sourceClient.GetAddressOf()));
+        }
         if (SUCCEEDED(hr)) hr = sourceClient->GetMixFormat(&sourceFormat.value);
         if (SUCCEEDED(hr) && !isFloatStereo(sourceFormat.value)) hr = AUDCLNT_E_UNSUPPORTED_FORMAT;
         if (SUCCEEDED(hr)) {
@@ -225,10 +234,14 @@ struct WasapiRelay::Impl {
                 0, 0, sourceFormat.value, nullptr);
         }
         if (SUCCEEDED(hr)) hr = sourceClient->SetEventHandle(captureEvent.get());
-        if (SUCCEEDED(hr)) hr = sourceClient->GetService(IID_PPV_ARGS(&captureClient));
+        if (SUCCEEDED(hr)) hr = sourceClient->GetService(IID_PPV_ARGS(captureClient.GetAddressOf()));
         if (SUCCEEDED(hr)) hr = sourceClient->GetBufferSize(&sourceBufferFrames);
 
-        if (SUCCEEDED(hr)) hr = destinationDevice->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, &destinationClient);
+        if (SUCCEEDED(hr)) {
+            hr = destinationDevice->Activate(
+                __uuidof(IAudioClient), CLSCTX_ALL, nullptr,
+                reinterpret_cast<void**>(destinationClient.GetAddressOf()));
+        }
         if (SUCCEEDED(hr)) {
             hr = destinationClient->Initialize(
                 AUDCLNT_SHAREMODE_SHARED,
@@ -238,7 +251,7 @@ struct WasapiRelay::Impl {
                 0, 0, sourceFormat.value, nullptr);
         }
         if (SUCCEEDED(hr)) hr = destinationClient->SetEventHandle(renderEvent.get());
-        if (SUCCEEDED(hr)) hr = destinationClient->GetService(IID_PPV_ARGS(&renderClient));
+        if (SUCCEEDED(hr)) hr = destinationClient->GetService(IID_PPV_ARGS(renderClient.GetAddressOf()));
         if (SUCCEEDED(hr)) hr = destinationClient->GetBufferSize(&destinationBufferFrames);
 
         ApoProcessorBridge bridge;
@@ -286,6 +299,10 @@ struct WasapiRelay::Impl {
         while (keepRunning) {
             const DWORD waitResult = WaitForMultipleObjects(3, waits, FALSE, INFINITE);
             if (waitResult == WAIT_OBJECT_0) {
+                keepRunning = false;
+                continue;
+            }
+            if (waitResult == WAIT_FAILED || waitResult > WAIT_OBJECT_0 + 2) {
                 keepRunning = false;
                 continue;
             }
