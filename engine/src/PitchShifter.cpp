@@ -1,4 +1,5 @@
 #include "pulsefx/PitchShifter.h"
+#include <cstring>
 #include <signalsmith-stretch/signalsmith-stretch.h>
 #include <algorithm>
 #include <array>
