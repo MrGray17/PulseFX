@@ -124,5 +124,13 @@ if(PULSEFX_BUILD_TESTS)
     add_executable(pulsefx_wasapi_relay_tests windows/relay/relay_smoke_tests.cpp)
     target_link_libraries(pulsefx_wasapi_relay_tests PRIVATE pulsefx_wasapi_relay)
     add_test(NAME pulsefx_wasapi_relay_tests COMMAND pulsefx_wasapi_relay_tests)
+
+    add_test(
+      NAME pulsefx_audio_host_process_tests
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/windows/host/host_process_smoke.ps1"
+        -HostPath "$<TARGET_FILE:pulsefx_audio_host>"
+    )
+    set_tests_properties(pulsefx_audio_host_process_tests PROPERTIES TIMEOUT 20)
   endif()
 endif()
