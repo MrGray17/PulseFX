@@ -126,6 +126,22 @@ void testDryFiveOneCentreStaysCentered() {
             "dry centre channel moved off centre");
     }
 }
+
+void testPrepareClearsStaleSurroundAmount() {
+    pulsefx::MultichannelBinaural renderer;
+    require(renderer.prepare(kSampleRate, 6), "initial 5.1 renderer prepare failed");
+    renderer.setAmount(1.0f);
+    require(std::abs(renderer.amount() - 1.0f) < 1.0e-6f, "test could not enable multichannel surround");
+
+    require(renderer.prepare(kSampleRate, 8), "7.1 re-prepare failed");
+    require(std::abs(renderer.amount()) < 1.0e-6f,
+        "device re-prepare leaked the previous multichannel surround amount");
+
+    renderer.setAmount(0.63f);
+    require(renderer.prepare(kSampleRate, 6), "second 5.1 re-prepare failed");
+    require(std::abs(renderer.amount()) < 1.0e-6f,
+        "channel-layout re-prepare did not return renderer to neutral control state");
+}
 }
 
 int main() {
@@ -134,5 +150,6 @@ int main() {
     testFiveOneSideChannelIsDirectional();
     testSevenOneRearChannelIsDirectional();
     testDryFiveOneCentreStaysCentered();
+    testPrepareClearsStaleSurroundAmount();
     std::cout << "PulseFX Boom-parity DSP tests passed\n";
 }
