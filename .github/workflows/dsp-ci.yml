@@ -6,6 +6,7 @@ on:
       - 'engine/**'
       - 'windows/**'
       - 'app/**'
+      - 'tools/**'
       - 'CMakeLists.txt'
       - '.github/workflows/dsp-ci.yml'
   pull_request:
@@ -13,6 +14,7 @@ on:
       - 'engine/**'
       - 'windows/**'
       - 'app/**'
+      - 'tools/**'
       - 'CMakeLists.txt'
       - '.github/workflows/dsp-ci.yml'
 
@@ -36,6 +38,13 @@ jobs:
       - name: Test
         run: ctest --test-dir build -C Debug --output-on-failure
 
+  quality-lab:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test A/B reference analyzer
+        run: python tools/tests/test_audio_lab.py
+
   desktop:
     runs-on: windows-latest
     defaults:
@@ -56,7 +65,7 @@ jobs:
 
   package-windows:
     runs-on: windows-latest
-    needs: [native, desktop]
+    needs: [native, desktop, quality-lab]
     steps:
       - uses: actions/checkout@v4
       - name: Configure native Release build
