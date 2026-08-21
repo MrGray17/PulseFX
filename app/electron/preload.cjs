@@ -10,6 +10,12 @@ contextBridge.exposeInMainWorld('pulsefx', {
   saveSettings(settings) {
     return ipcRenderer.invoke('pulsefx:settings:save', settings);
   },
+  listHeadphones() {
+    return ipcRenderer.invoke('pulsefx:autoeq:list');
+  },
+  applyHeadphoneProfile(modelPath) {
+    return ipcRenderer.invoke('pulsefx:autoeq:apply', modelPath);
+  },
   onEvent(callback) {
     if (typeof callback !== 'function') return () => {};
     const listener = (_event, payload) => callback(payload);
