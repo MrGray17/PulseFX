@@ -57,6 +57,7 @@ public:
         control_.processor.fidelity = 0.42f;
         control_.processor.space = 0.34f;
         control_.processor.dynamics = 0.20f;
+        control_.processor.pitchSemitones = 0.0f;
     }
 
     ~PulseFxHost() { stop(); }
@@ -95,7 +96,7 @@ public:
         if (command.name == "headphone_enable") return handleBoolControlLocked(command, "headphone_enable");
         if (command.name == "preamp" || command.name == "bass" || command.name == "clarity" ||
             command.name == "fidelity" || command.name == "spatial" || command.name == "surround" ||
-            command.name == "ambience" || command.name == "dynamics") {
+            command.name == "ambience" || command.name == "dynamics" || command.name == "pitch") {
             return handleFloatControlLocked(command);
         }
         if (command.name == "eq") return handleEqLocked(command);
@@ -193,8 +194,12 @@ private:
         if (command.args.size() != 1) return errorJson("numeric control expects one value");
         float value = 0.0f;
         if (!parseFloat(command.args[0], value)) return errorJson("invalid numeric value");
-        if (command.name == "preamp") control_.processor.preampDb = std::clamp(value, -18.0f, 9.0f);
-        else {
+
+        if (command.name == "preamp") {
+            control_.processor.preampDb = std::clamp(value, -18.0f, 9.0f);
+        } else if (command.name == "pitch") {
+            control_.processor.pitchSemitones = std::clamp(value, -5.0f, 5.0f);
+        } else {
             value = std::clamp(value, 0.0f, 1.0f);
             if (command.name == "bass") control_.processor.bass = value;
             else if (command.name == "clarity") control_.processor.clarity = value;
@@ -279,7 +284,10 @@ private:
             << ",\"destinationId\":" << quoted(utf8FromWide(destinationId_))
             << ",\"preferredDestinationId\":" << quoted(utf8FromWide(preferredDestinationId_))
             << ",\"error\":" << quoted(lastError_)
-            << ",\"stats\":{"
+            << ",\"controls\":{"
+            << "\"enabled\":" << (!control_.processor.bypass ? "true" : "false") << ','
+            << "\"pitchSemitones\":" << control_.processor.pitchSemitones
+            << "},\"stats\":{"
             << "\"underruns\":" << stats.underruns << ','
             << "\"overruns\":" << stats.overruns << ','
             << "\"capturedFrames\":" << stats.capturedFrames << ','
