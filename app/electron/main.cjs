@@ -5,6 +5,7 @@ const path = require('node:path');
 const readline = require('node:readline');
 const { pathToFileURL } = require('node:url');
 const autoeq = require('./autoeq.cjs');
+const mediaLaunch = require('./mediaLaunch.cjs');
 const radio = require('./radio.cjs');
 
 const allowedCommands = new Set([
@@ -150,6 +151,13 @@ function showWindow(tab) {
   mainWindow.show();
   mainWindow.restore();
   mainWindow.focus();
+}
+
+function forwardMediaLaunch(action) {
+  if (!action?.files?.length) return false;
+  showWindow('player');
+  dispatchQuickAction(action);
+  return true;
 }
 
 function updateQuickState(name, args) {
@@ -474,29 +482,47 @@ ipcMain.handle('pulsefx:radio:search', async (_event, query) => {
 });
 ipcMain.handle('pulsefx:radio:click', async (_event, stationuuid) => radio.recordClick(stationuuid));
 
-app.whenReady().then(async () => {
-  createWindow();
-  await createTray();
-  registerShortcuts(loadSettings().shortcuts);
-  try { await startHost(); } catch (error) {
-    broadcast('pulsefx:host-state', { running: false, error: error.message });
-    scheduleRestart();
-  }
-  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
-});
+const initialMediaAction = mediaLaunch.openFilesAction(process.argv, process.cwd());
+const initialMediaFiles = initialMediaAction?.files?.map((file) => file.id) ?? [];
+const gotSingleInstanceLock = app.requestSingleInstanceLock({ mediaFiles: initialMediaFiles });
 
-app.on('window-all-closed', () => {
-  // Keep the system-wide engine and Quick Controls alive in the tray.
-});
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', (_event, argv, workingDirectory, additionalData) => {
+    const forwardedFiles = Array.isArray(additionalData?.mediaFiles) ? additionalData.mediaFiles : [];
+    const action = mediaLaunch.openFilesAction(
+      forwardedFiles.length > 0 ? forwardedFiles : argv,
+      workingDirectory || process.cwd(),
+    );
+    if (!forwardMediaLaunch(action)) showWindow();
+  });
 
-app.on('before-quit', () => {
-  appQuitting = true;
-  globalShortcut.unregisterAll();
-  if (restarting) clearTimeout(restarting);
-  rejectStartup(new Error('PulseFX is shutting down'));
-  rejectPending(new Error('PulseFX is shutting down'));
-  if (hostProcess?.stdin?.writable) hostProcess.stdin.write('quit\n');
-  hostProcess?.kill();
-  tray?.destroy();
-  tray = null;
-});
+  app.whenReady().then(async () => {
+    createWindow();
+    if (initialMediaAction) forwardMediaLaunch(initialMediaAction);
+    await createTray();
+    registerShortcuts(loadSettings().shortcuts);
+    try { await startHost(); } catch (error) {
+      broadcast('pulsefx:host-state', { running: false, error: error.message });
+      scheduleRestart();
+    }
+    app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+  });
+
+  app.on('window-all-closed', () => {
+    // Keep the system-wide engine and Quick Controls alive in the tray.
+  });
+
+  app.on('before-quit', () => {
+    appQuitting = true;
+    globalShortcut.unregisterAll();
+    if (restarting) clearTimeout(restarting);
+    rejectStartup(new Error('PulseFX is shutting down'));
+    rejectPending(new Error('PulseFX is shutting down'));
+    if (hostProcess?.stdin?.writable) hostProcess.stdin.write('quit\n');
+    hostProcess?.kill();
+    tray?.destroy();
+    tray = null;
+  });
+}
