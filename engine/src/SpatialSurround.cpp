@@ -7,7 +7,7 @@ namespace pulsefx {
 
 HrtfProfile SpatialSurround::makeDefaultProfile(float sampleRate) noexcept {
     HrtfProfile profile{};
-    profile.taps = HrtfProfile::kMaxTaps;
+    profile.taps = 96;
 
     // Symmetric analytic fallback: direct ipsilateral energy plus a delayed,
     // spectrally softened contralateral path. This is intentionally not
@@ -19,7 +19,7 @@ HrtfProfile SpatialSurround::makeDefaultProfile(float sampleRate) noexcept {
     profile.rightToRight = profile.leftToLeft;
 
     const float clampedRate = std::clamp(sampleRate, 8000.0f, 192000.0f);
-    const std::size_t maxDelay = HrtfProfile::kMaxTaps - 8;
+    const std::size_t maxDelay = profile.taps - 8;
     const std::size_t delay = std::min<std::size_t>(
         maxDelay,
         static_cast<std::size_t>(std::lround(clampedRate * 0.00042f)));
