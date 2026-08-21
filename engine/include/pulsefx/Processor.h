@@ -1,11 +1,14 @@
 #pragma once
+#include "Ambience.h"
 #include "BassEnhancer.h"
 #include "ClarityEnhancer.h"
 #include "Dynamics.h"
 #include "Equalizer.h"
+#include "FidelityEnhancer.h"
 #include "HeadphoneCorrection.h"
 #include "Limiter.h"
 #include "SmoothedValue.h"
+#include "SpatialSurround.h"
 #include "StereoEnhancer.h"
 #include <cstddef>
 
@@ -16,7 +19,10 @@ struct ProcessorParameters {
     float preampDb{0.0f};
     float bass{0.0f};
     float clarity{0.0f};
-    float space{0.0f};
+    float fidelity{0.0f};
+    float space{0.0f};       // stereo-image widening
+    float surround{0.0f};    // HRTF/binaural virtualization
+    float ambience{0.0f};    // early reflections
     float dynamics{0.0f};
     bool nightMode{false};
 };
@@ -26,8 +32,10 @@ public:
     void prepare(float sampleRate) noexcept;
     void reset() noexcept;
     void setParameters(const ProcessorParameters& parameters) noexcept;
+    const ProcessorParameters& parameters() const noexcept { return parameters_; }
     Equalizer& equalizer() noexcept { return equalizer_; }
     HeadphoneCorrection& headphoneCorrection() noexcept { return headphoneCorrection_; }
+    SpatialSurround& spatialSurround() noexcept { return spatialSurround_; }
     Limiter& limiter() noexcept { return limiter_; }
     const Limiter& limiter() const noexcept { return limiter_; }
     void processInterleaved(float* samples, std::size_t frames, std::size_t channels) noexcept;
@@ -39,8 +47,11 @@ private:
     Equalizer equalizer_{};
     HeadphoneCorrection headphoneCorrection_{};
     BassEnhancer bass_{};
+    FidelityEnhancer fidelity_{};
     ClarityEnhancer clarity_{};
     Dynamics dynamics_{};
+    SpatialSurround spatialSurround_{};
+    Ambience ambience_{};
     StereoEnhancer stereo_{};
     Limiter limiter_{};
 };
