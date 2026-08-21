@@ -2,6 +2,7 @@
 
 #include "WasapiRelay.h"
 #include "ClockDriftController.h"
+#include "StereoSampleCodec.h"
 #include <Audioclient.h>
 #include <Mmdeviceapi.h>
 #include <Windows.h>
@@ -43,13 +44,46 @@ struct CoTaskMemWaveFormat {
     ~CoTaskMemWaveFormat() { if (value) CoTaskMemFree(value); }
 };
 
-bool isFloatStereo(const WAVEFORMATEX* format) noexcept {
-    if (!format || format->nChannels != 2 || format->wBitsPerSample != 32) return false;
-    if (format->wFormatTag == WAVE_FORMAT_IEEE_FLOAT) return true;
+bool detectStereoEncoding(
+    const WAVEFORMATEX* format,
+    StereoSampleEncoding& encoding) noexcept {
+    if (!format || format->nChannels != 2) return false;
+
+    if (format->wFormatTag == WAVE_FORMAT_IEEE_FLOAT && format->wBitsPerSample == 32) {
+        encoding = StereoSampleEncoding::Float32;
+        return true;
+    }
+    if (format->wFormatTag == WAVE_FORMAT_PCM && format->wBitsPerSample == 16) {
+        encoding = StereoSampleEncoding::Pcm16;
+        return true;
+    }
     if (format->wFormatTag != WAVE_FORMAT_EXTENSIBLE ||
         format->cbSize < sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX)) return false;
+
     const auto* extensible = reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(format);
-    return IsEqualGUID(extensible->SubFormat, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT) != FALSE;
+    if (IsEqualGUID(extensible->SubFormat, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT) != FALSE &&
+        format->wBitsPerSample == 32) {
+        encoding = StereoSampleEncoding::Float32;
+        return true;
+    }
+    if (IsEqualGUID(extensible->SubFormat, KSDATAFORMAT_SUBTYPE_PCM) != FALSE &&
+        format->wBitsPerSample == 16) {
+        encoding = StereoSampleEncoding::Pcm16;
+        return true;
+    }
+    return false;
+}
+
+WAVEFORMATEX makeFloatRenderFormat(DWORD sampleRate) noexcept {
+    WAVEFORMATEX format{};
+    format.wFormatTag = WAVE_FORMAT_IEEE_FLOAT;
+    format.nChannels = 2;
+    format.nSamplesPerSec = sampleRate;
+    format.wBitsPerSample = 32;
+    format.nBlockAlign = static_cast<WORD>(format.nChannels * sizeof(float));
+    format.nAvgBytesPerSec = format.nSamplesPerSec * format.nBlockAlign;
+    format.cbSize = 0;
+    return format;
 }
 
 HRESULT resolveRenderDevice(
@@ -218,6 +252,7 @@ struct WasapiRelay::Impl {
         CoTaskMemWaveFormat sourceFormat;
         UINT32 sourceBufferFrames = 0;
         UINT32 destinationBufferFrames = 0;
+        StereoSampleEncoding sourceEncoding = StereoSampleEncoding::Float32;
 
         HRESULT hr = CoCreateInstance(
             __uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
@@ -233,7 +268,9 @@ struct WasapiRelay::Impl {
                 reinterpret_cast<void**>(sourceClient.GetAddressOf()));
         }
         if (SUCCEEDED(hr)) hr = sourceClient->GetMixFormat(&sourceFormat.value);
-        if (SUCCEEDED(hr) && !isFloatStereo(sourceFormat.value)) hr = AUDCLNT_E_UNSUPPORTED_FORMAT;
+        if (SUCCEEDED(hr) && !detectStereoEncoding(sourceFormat.value, sourceEncoding)) {
+            hr = AUDCLNT_E_UNSUPPORTED_FORMAT;
+        }
         if (SUCCEEDED(hr)) {
             hr = sourceClient->Initialize(
                 AUDCLNT_SHAREMODE_SHARED,
@@ -244,6 +281,8 @@ struct WasapiRelay::Impl {
         if (SUCCEEDED(hr)) hr = sourceClient->GetService(IID_PPV_ARGS(captureClient.GetAddressOf()));
         if (SUCCEEDED(hr)) hr = sourceClient->GetBufferSize(&sourceBufferFrames);
 
+        WAVEFORMATEX renderFormat{};
+        if (SUCCEEDED(hr)) renderFormat = makeFloatRenderFormat(sourceFormat.value->nSamplesPerSec);
         if (SUCCEEDED(hr)) {
             hr = destinationDevice->Activate(
                 __uuidof(IAudioClient), CLSCTX_ALL, nullptr,
@@ -256,7 +295,7 @@ struct WasapiRelay::Impl {
                     AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM |
                     AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY |
                     AUDCLNT_STREAMFLAGS_RATEADJUST,
-                0, 0, sourceFormat.value, nullptr);
+                0, 0, &renderFormat, nullptr);
         }
         if (SUCCEEDED(hr)) hr = destinationClient->SetEventHandle(renderEvent.get());
         if (SUCCEEDED(hr)) hr = destinationClient->GetService(IID_PPV_ARGS(renderClient.GetAddressOf()));
@@ -302,9 +341,6 @@ struct WasapiRelay::Impl {
             return;
         }
 
-        // IAudioClockAdjustment must not be driven from the realtime audio
-        // processing path. A low-frequency MTA control thread observes ring
-        // fill and gently trims the physical render stream rate instead.
         ComPtr<IAudioClient> clockClient = destinationClient;
         const float nominalSampleRate = static_cast<float>(sourceFormat.value->nSamplesPerSec);
         std::thread clockWorker([
@@ -370,7 +406,7 @@ struct WasapiRelay::Impl {
                     if ((flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0 || !rawData) {
                         std::fill_n(captureScratch.data(), sampleCount, 0.0f);
                     } else {
-                        std::memcpy(captureScratch.data(), rawData, sampleCount * sizeof(float));
+                        decodeStereoSamples(rawData, frames, sourceEncoding, captureScratch.data());
                     }
                     captureClient->ReleaseBuffer(frames);
 
