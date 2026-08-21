@@ -7,7 +7,7 @@ const readline = require('node:readline');
 const allowedCommands = new Set([
   'ping', 'status', 'devices', 'apps', 'quit', 'output', 'enabled', 'night',
   'headphone_enable', 'preamp', 'bass', 'clarity', 'fidelity', 'spatial',
-  'surround', 'ambience', 'dynamics', 'eq', 'app_volume', 'app_mute',
+  'surround', 'ambience', 'dynamics', 'pitch', 'eq', 'app_volume', 'app_mute',
 ]);
 
 let mainWindow = null;
@@ -38,7 +38,9 @@ function saveSettings(value) {
   }
   const file = settingsPath();
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(value, null, 2), 'utf8');
+  const temporary = `${file}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify(value, null, 2), 'utf8');
+  fs.renameSync(temporary, file);
   return true;
 }
 
@@ -127,8 +129,6 @@ async function startHost() {
       return;
     }
 
-    // The native host emits exactly one startup status before it reads stdin.
-    // Consume that handshake before resolving any request/response command.
     if (hostStartup && message?.type === 'status') {
       clearTimeout(hostStartup.timer);
       const resolve = hostStartup.resolve;
