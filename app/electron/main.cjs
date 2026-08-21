@@ -13,6 +13,7 @@ const allowedCommands = new Set([
 let mainWindow = null;
 let hostProcess = null;
 let hostReadline = null;
+let hostStartup = null;
 let restarting = null;
 let appQuitting = false;
 const pending = [];
@@ -37,9 +38,7 @@ function saveSettings(value) {
   }
   const file = settingsPath();
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const temporary = `${file}.tmp`;
-  fs.writeFileSync(temporary, JSON.stringify(value, null, 2), 'utf8');
-  fs.renameSync(temporary, file);
+  fs.writeFileSync(file, JSON.stringify(value, null, 2), 'utf8');
   return true;
 }
 
@@ -66,6 +65,14 @@ function rejectPending(error) {
   }
 }
 
+function rejectStartup(error) {
+  if (!hostStartup) return;
+  clearTimeout(hostStartup.timer);
+  const reject = hostStartup.reject;
+  hostStartup = null;
+  reject(error);
+}
+
 function broadcast(channel, payload) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
 }
@@ -82,11 +89,27 @@ function scheduleRestart() {
 }
 
 async function startHost() {
-  if (hostProcess && !hostProcess.killed) return;
+  if (hostProcess && !hostProcess.killed) {
+    if (hostStartup) await hostStartup.promise;
+    return;
+  }
+
   const executable = findHostExecutable();
   if (!fs.existsSync(executable)) {
     throw new Error(`PulseFX native host was not found: ${executable}`);
   }
+
+  let startupResolve;
+  let startupReject;
+  const startupPromise = new Promise((resolve, reject) => {
+    startupResolve = resolve;
+    startupReject = reject;
+  });
+  const startupTimer = setTimeout(() => {
+    rejectStartup(new Error('PulseFX native host did not become ready in time'));
+    hostProcess?.kill();
+  }, 5000);
+  hostStartup = { promise: startupPromise, resolve: startupResolve, reject: startupReject, timer: startupTimer };
 
   hostProcess = spawn(executable, [], {
     windowsHide: true,
@@ -101,6 +124,17 @@ async function startHost() {
       message = JSON.parse(line);
     } catch {
       broadcast('pulsefx:host-log', { stream: 'stdout', message: line });
+      return;
+    }
+
+    // The native host emits exactly one startup status before it reads stdin.
+    // Consume that handshake before resolving any request/response command.
+    if (hostStartup && message?.type === 'status') {
+      clearTimeout(hostStartup.timer);
+      const resolve = hostStartup.resolve;
+      hostStartup = null;
+      broadcast('pulsefx:event', message);
+      resolve();
       return;
     }
 
@@ -119,12 +153,14 @@ async function startHost() {
   });
 
   hostProcess.once('error', (error) => {
+    rejectStartup(error);
     rejectPending(error);
     broadcast('pulsefx:host-state', { running: false, error: error.message });
   });
 
   hostProcess.once('exit', (code, signal) => {
     const error = new Error(`PulseFX native host exited (${code ?? signal ?? 'unknown'})`);
+    rejectStartup(error);
     rejectPending(error);
     hostReadline?.close();
     hostReadline = null;
@@ -133,6 +169,7 @@ async function startHost() {
     scheduleRestart();
   });
 
+  await startupPromise;
   broadcast('pulsefx:host-state', { running: true, error: '' });
 }
 
@@ -225,6 +262,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   appQuitting = true;
   if (restarting) clearTimeout(restarting);
+  rejectStartup(new Error('PulseFX is shutting down'));
   rejectPending(new Error('PulseFX is shutting down'));
   if (hostProcess?.stdin?.writable) hostProcess.stdin.write('quit\n');
   hostProcess?.kill();
