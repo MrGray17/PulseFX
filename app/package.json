@@ -49,6 +49,10 @@
         "to": "native/pulsefx_audio_host.exe"
       },
       {
+        "from": "../build/Release/pulsefx_device_setup.exe",
+        "to": "native/pulsefx_device_setup.exe"
+      },
+      {
         "from": "driver-package",
         "to": "driver",
         "filter": ["**/*"]
