@@ -44,6 +44,34 @@ function Replace-Required {
     Set-Content -LiteralPath $Path -Value ($text.Replace($Old, $New)) -Encoding utf8
 }
 
+function Add-WdkNuGetToolsToPath {
+    param([Parameter(Mandatory)] [string]$PackagesRoot)
+
+    $requiredTools = @('stampinf.exe', 'inf2cat.exe')
+    $toolDirectories = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+    foreach ($toolName in $requiredTools) {
+        $matches = Get-ChildItem -LiteralPath $PackagesRoot -Recurse -File -Filter $toolName -ErrorAction SilentlyContinue
+        if (-not $matches) { throw "NuGet WDK restore did not contain required tool: $toolName" }
+
+        # Prefer a native x64 host tool on the x64 GitHub runner, but add every
+        # matching parent directory so companion WDK tools remain discoverable.
+        foreach ($match in ($matches | Sort-Object @{ Expression = { if ($_.FullName -match '[\\/]x64[\\/]') { 0 } else { 1 } } }, FullName)) {
+            [void]$toolDirectories.Add($match.Directory.FullName)
+        }
+    }
+
+    if ($toolDirectories.Count -eq 0) { throw 'No NuGet WDK tool directories were discovered.' }
+    $prefix = ($toolDirectories | Sort-Object) -join ';'
+    $env:PATH = "$prefix;$env:PATH"
+
+    foreach ($toolName in $requiredTools) {
+        $resolved = Get-Command $toolName -ErrorAction SilentlyContinue
+        if (-not $resolved) { throw "WDK tool was found in the package but is still not executable from PATH: $toolName" }
+        Write-Host "WDK tool: $toolName -> $($resolved.Source)"
+    }
+}
+
 if (Test-Path $WorkRoot) { Remove-Item -LiteralPath $WorkRoot -Recurse -Force }
 New-Item -ItemType Directory -Path $WorkRoot -Force | Out-Null
 
@@ -84,7 +112,9 @@ foreach ($required in @(
 
 $nuget = Get-Command nuget.exe -ErrorAction SilentlyContinue
 if (-not $nuget) { throw 'nuget.exe is required for the WDK NuGet restore.' }
-Invoke-Checked $nuget.Source @('restore', (Join-Path $RepoRoot 'packages.config'), '-PackagesDirectory', (Join-Path $RepoRoot 'packages')) $RepoRoot
+$packagesRoot = Join-Path $RepoRoot 'packages'
+Invoke-Checked $nuget.Source @('restore', (Join-Path $RepoRoot 'packages.config'), '-PackagesDirectory', $packagesRoot) $RepoRoot
+Add-WdkNuGetToolsToPath -PackagesRoot $packagesRoot
 
 # Do not depend on the Windows-driver-samples Build-Samples.ps1 environment
 # discovery wrapper here. Hosted VS/WDK runner metadata has changed across
@@ -146,7 +176,8 @@ $manifest = @(
     "sample_rate=48000",
     "bits_per_sample=16",
     "compiler_warnings_as_errors=true",
-    "hosted_prefast=disabled-unavailable"
+    "hosted_prefast=disabled-unavailable",
+    "wdk_tools=nuget-discovered"
 ) -join "`r`n"
 Set-Content -LiteralPath (Join-Path $OutRoot 'PULSEFX_BUILD.txt') -Value $manifest -Encoding ascii
 
