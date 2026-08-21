@@ -1,6 +1,9 @@
+#include "pulsefx/Ambience.h"
 #include "pulsefx/Equalizer.h"
+#include "pulsefx/FidelityEnhancer.h"
 #include "pulsefx/HeadphoneCorrection.h"
 #include "pulsefx/Processor.h"
+#include "pulsefx/SpatialSurround.h"
 #include "pulsefx/TruePeakDetector.h"
 #include <algorithm>
 #include <cmath>
@@ -106,6 +109,98 @@ void testSpaceKeepsMonoCentered() {
     }
 }
 
+void testSpatialSurroundCrossfeedsOppositeEar() {
+    pulsefx::SpatialSurround surround;
+    surround.prepare(kSampleRate);
+    surround.setAmount(1.0f);
+    surround.reset();
+    float oppositeEarEnergy = 0.0f;
+    for (std::size_t i = 0; i < 256; ++i) {
+        float left = i == 0 ? 1.0f : 0.0f;
+        float right = 0.0f;
+        surround.processStereo(left, right);
+        oppositeEarEnergy += right * right;
+    }
+    require(oppositeEarEnergy > 0.01f, "surround failed to create a contralateral HRTF path");
+}
+
+void testSpatialSurroundKeepsMonoCentered() {
+    pulsefx::SpatialSurround surround;
+    surround.prepare(kSampleRate);
+    surround.setAmount(1.0f);
+    surround.reset();
+    for (std::size_t i = 0; i < 4096; ++i) {
+        const float sample = 0.1f * std::sin(2.0f * std::numbers::pi_v<float> * 700.0f * static_cast<float>(i) / kSampleRate);
+        float left = sample;
+        float right = sample;
+        surround.processStereo(left, right);
+        require(std::abs(left - right) < 1.0e-5f, "surround moved symmetric mono content off center");
+    }
+}
+
+void testAmbienceCreatesCrossChannelEarlyReflections() {
+    pulsefx::Ambience ambience;
+    ambience.prepare(kSampleRate);
+    ambience.setAmount(1.0f);
+    ambience.reset();
+    float rightEnergy = 0.0f;
+    for (std::size_t i = 0; i < 4096; ++i) {
+        float left = i == 0 ? 1.0f : 0.0f;
+        float right = 0.0f;
+        ambience.processStereo(left, right);
+        if (i > 400) rightEnergy += right * right;
+    }
+    require(rightEnergy > 0.001f, "ambience produced no cross-channel early reflections");
+}
+
+void testFidelityLiftsQuietHighFrequencyDetail() {
+    pulsefx::FidelityEnhancer fidelity;
+    fidelity.prepare(kSampleRate);
+    fidelity.setAmount(1.0f);
+    fidelity.reset();
+    float inputEnergy = 0.0f;
+    float outputEnergy = 0.0f;
+    for (std::size_t i = 0; i < 12000; ++i) {
+        const float input = 0.025f * std::sin(2.0f * std::numbers::pi_v<float> * 8000.0f * static_cast<float>(i) / kSampleRate);
+        float left = input;
+        float right = input;
+        fidelity.processStereo(left, right);
+        if (i > 4000) {
+            inputEnergy += input * input;
+            outputEnergy += left * left;
+        }
+    }
+    require(outputEnergy > inputEnergy * 1.08f, "fidelity did not lift quiet high-frequency detail");
+}
+
+void testReferenceEffectCompatibility() {
+    pulsefx::Processor processor;
+    processor.prepare(kSampleRate);
+    pulsefx::ProcessorParameters params{};
+    params.surround = 0.8f;
+    params.space = 0.7f;
+    params.ambience = 0.6f;
+    params.fidelity = 0.5f;
+    params.nightMode = true;
+    processor.setParameters(params);
+    const auto surroundState = processor.parameters();
+    require(surroundState.surround > 0.79f, "surround was unexpectedly disabled");
+    require(surroundState.space == 0.0f, "spatial remained enabled with surround");
+    require(surroundState.ambience == 0.0f, "ambience remained enabled with surround");
+    require(!surroundState.nightMode, "night mode remained enabled with surround");
+    require(surroundState.fidelity > 0.49f, "fidelity should remain compatible with surround");
+
+    params = {};
+    params.ambience = 0.8f;
+    params.space = 0.8f;
+    params.nightMode = true;
+    processor.setParameters(params);
+    const auto ambienceState = processor.parameters();
+    require(ambienceState.ambience > 0.79f, "ambience was unexpectedly disabled");
+    require(ambienceState.space == 0.0f, "spatial remained enabled with ambience");
+    require(!ambienceState.nightMode, "night mode remained enabled with ambience");
+}
+
 void testHeadphoneCorrectionProfileIsStable() {
     pulsefx::Processor processor;
     processor.prepare(44100.0f);
@@ -175,9 +270,9 @@ void testExtremeControlsNeverProduceNan() {
         params.preampDb = 9.0f;
         params.bass = 1.0f;
         params.clarity = 1.0f;
-        params.space = 1.0f;
+        params.fidelity = 1.0f;
+        params.surround = 1.0f;
         params.dynamics = 1.0f;
-        params.nightMode = true;
         processor.setParameters(params);
         for (std::size_t band = 0; band < pulsefx::Equalizer::kFrequencies.size(); ++band) {
             processor.equalizer().setBandGain(band, band % 2 == 0 ? 12.0f : -12.0f);
@@ -196,6 +291,11 @@ int main() {
     testLimiterContainsAHotTransient();
     test31BandEqualizerActuallyBoostsOneKhz();
     testSpaceKeepsMonoCentered();
+    testSpatialSurroundCrossfeedsOppositeEar();
+    testSpatialSurroundKeepsMonoCentered();
+    testAmbienceCreatesCrossChannelEarlyReflections();
+    testFidelityLiftsQuietHighFrequencyDetail();
+    testReferenceEffectCompatibility();
     testHeadphoneCorrectionProfileIsStable();
     testTruePeakDetectorCatchesInterSamplePeak();
     testLimiterContainsInterSamplePeak();
