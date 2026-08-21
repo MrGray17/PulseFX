@@ -16,6 +16,8 @@ $RepoRoot = Join-Path $WorkRoot 'Windows-driver-samples'
 $SampleRoot = Join-Path $RepoRoot 'audio\simpleaudiosample'
 $OutRoot = Join-Path $PSScriptRoot 'out-ci'
 
+. (Join-Path $PSScriptRoot 'patch-speaker-formats.ps1')
+
 function Invoke-Checked {
     param(
         [Parameter(Mandatory)] [string]$FilePath,
@@ -54,6 +56,7 @@ if (-not (Test-Path $SampleRoot)) { throw "Pinned SimpleAudioSample was not foun
 
 $miniPairsPath = Join-Path $SampleRoot 'Source\Filters\minipairs.h'
 Replace-Required -Path $miniPairsPath -Old '#define g_cCaptureEndpoints (SIZEOF_ARRAY(g_CaptureEndpoints))' -New '#define g_cCaptureEndpoints 0'
+Set-PulseFxSpeakerFormats -SampleRoot $SampleRoot
 
 $infPath = Join-Path $SampleRoot 'Source\Main\SimpleAudioSample.inx'
 Replace-Required -Path $infPath -Old 'ROOT\SimpleAudioSample' -New 'ROOT\PulseFXVirtualAudio'
@@ -67,6 +70,17 @@ Replace-Required -Path $infPath -Old 'SIMPLEAUDIOSAMPLE.TopologySpeaker.szPname=
 $infLines = Get-Content -LiteralPath $infPath
 $filteredInfLines = $infLines | Where-Object { $_ -notmatch '^AddInterface=.*(WaveMicArray1|TopologyMicArray1)' }
 Set-Content -LiteralPath $infPath -Value $filteredInfLines -Encoding utf8
+
+$waveTable = Get-Content -LiteralPath (Join-Path $SampleRoot 'Source\Filters\speakerwavtable.h') -Raw
+foreach ($required in @(
+    'SPEAKER_DEVICE_MAX_CHANNELS                 8',
+    'KSAUDIO_SPEAKER_5POINT1_SURROUND',
+    'KSAUDIO_SPEAKER_7POINT1_SURROUND',
+    '                6,',
+    '                8,'
+)) {
+    if (-not $waveTable.Contains($required)) { throw "Patched speaker table is missing: $required" }
+}
 
 $nuget = Get-Command nuget.exe -ErrorAction SilentlyContinue
 if (-not $nuget) { throw 'nuget.exe is required for the WDK NuGet restore.' }
@@ -107,7 +121,10 @@ $manifest = @(
     "configuration=$Configuration",
     "platform=$Platform",
     "hardware_id=ROOT\PulseFXVirtualAudio",
-    "capture_endpoints=disabled"
+    "capture_endpoints=disabled",
+    "render_formats=stereo,5.1-surround,7.1-surround",
+    "sample_rate=48000",
+    "bits_per_sample=16"
 ) -join "`r`n"
 Set-Content -LiteralPath (Join-Path $OutRoot 'PULSEFX_BUILD.txt') -Value $manifest -Encoding ascii
 

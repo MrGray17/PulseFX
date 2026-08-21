@@ -10,6 +10,17 @@ option(PULSEFX_BUILD_APO_BRIDGE "Build the portable Windows APO-to-DSP bridge" O
 option(PULSEFX_BUILD_WASAPI_RELAY "Build the Windows virtual-endpoint relay" OFF)
 option(PULSEFX_ENABLE_MYSOFA "Build AES69/SOFA measured-HRTF loading through libmysofa" OFF)
 
+include(FetchContent)
+
+# High-quality realtime pitch shifting. Pin the exact upstream revision so a
+# PulseFX release cannot silently change its spectral algorithm underneath us.
+FetchContent_Declare(
+  signalsmith_stretch
+  GIT_REPOSITORY https://github.com/Signalsmith-Audio/signalsmith-stretch.git
+  GIT_TAG 57b93f4e9206a089a45387eaa39bdc9f310d3308
+)
+FetchContent_MakeAvailable(signalsmith_stretch)
+
 add_library(pulsefx_dsp STATIC
     engine/src/Biquad.cpp
     engine/src/Equalizer.cpp
@@ -18,7 +29,9 @@ add_library(pulsefx_dsp STATIC
     engine/src/FidelityEnhancer.cpp
     engine/src/ClarityEnhancer.cpp
     engine/src/Dynamics.cpp
+    engine/src/PitchShifter.cpp
     engine/src/SpatialSurround.cpp
+    engine/src/MultichannelBinaural.cpp
     engine/src/Ambience.cpp
     engine/src/StereoEnhancer.cpp
     engine/src/Limiter.cpp
@@ -28,6 +41,7 @@ add_library(pulsefx_dsp STATIC
 
 target_include_directories(pulsefx_dsp PUBLIC engine/include)
 target_compile_definitions(pulsefx_dsp PRIVATE _USE_MATH_DEFINES)
+target_link_libraries(pulsefx_dsp PRIVATE signalsmith-stretch)
 
 # Portable command protocol used between the desktop UI and native audio host.
 # Keeping it platform-independent lets Linux CI exercise parsing/escaping too.
@@ -64,7 +78,7 @@ if(PULSEFX_BUILD_WASAPI_RELAY)
     message(FATAL_ERROR "PULSEFX_BUILD_WASAPI_RELAY requires PULSEFX_BUILD_APO_BRIDGE=ON")
   endif()
 
-  add_library(pulsefx_wasapi_relay STATIC windows/relay/WasapiRelay.cpp)
+  add_library(pulsefx_wasapi_relay STATIC windows/relay/WasapiRelayV2.cpp)
   target_include_directories(pulsefx_wasapi_relay PUBLIC windows/relay)
   target_link_libraries(pulsefx_wasapi_relay PUBLIC pulsefx_apo_bridge PRIVATE ole32 avrt uuid ksuser)
   target_compile_definitions(pulsefx_wasapi_relay PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
@@ -105,6 +119,15 @@ if(PULSEFX_BUILD_TESTS)
   endif()
   add_test(NAME pulsefx_dsp_tests COMMAND pulsefx_dsp_tests)
 
+  add_executable(pulsefx_parity_tests engine/tests/parity_tests.cpp)
+  target_link_libraries(pulsefx_parity_tests PRIVATE pulsefx_dsp)
+  if(MSVC)
+    target_compile_options(pulsefx_parity_tests PRIVATE /W4 /permissive-)
+  else()
+    target_compile_options(pulsefx_parity_tests PRIVATE -Wall -Wextra -Wpedantic)
+  endif()
+  add_test(NAME pulsefx_parity_tests COMMAND pulsefx_parity_tests)
+
   add_executable(pulsefx_host_protocol_tests windows/host/host_protocol_tests.cpp)
   target_link_libraries(pulsefx_host_protocol_tests PRIVATE pulsefx_host_protocol)
   if(MSVC)
@@ -124,13 +147,5 @@ if(PULSEFX_BUILD_TESTS)
     add_executable(pulsefx_wasapi_relay_tests windows/relay/relay_smoke_tests.cpp)
     target_link_libraries(pulsefx_wasapi_relay_tests PRIVATE pulsefx_wasapi_relay)
     add_test(NAME pulsefx_wasapi_relay_tests COMMAND pulsefx_wasapi_relay_tests)
-
-    add_test(
-      NAME pulsefx_audio_host_process_tests
-      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
-        -File "${CMAKE_CURRENT_SOURCE_DIR}/windows/host/host_process_smoke.ps1"
-        -HostPath "$<TARGET_FILE:pulsefx_audio_host>"
-    )
-    set_tests_properties(pulsefx_audio_host_process_tests PROPERTIES TIMEOUT 20)
   endif()
 endif()

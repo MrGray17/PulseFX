@@ -18,6 +18,8 @@ $PreparedRoot = Join-Path $WorkRoot 'PulseFXVirtualAudio'
 $SampleRoot = Join-Path $UpstreamRoot 'audio\simpleaudiosample'
 $OutRoot = Join-Path $PSScriptRoot 'out'
 
+. (Join-Path $PSScriptRoot 'patch-speaker-formats.ps1')
+
 function Invoke-Checked {
     param(
         [Parameter(Mandatory)] [string]$FilePath,
@@ -79,6 +81,11 @@ Copy-Item -LiteralPath $SampleRoot -Destination $PreparedRoot -Recurse
 $miniPairsPath = Join-Path $PreparedRoot 'Source\Filters\minipairs.h'
 Replace-Required -Path $miniPairsPath -Old '#define g_cCaptureEndpoints (SIZEOF_ARRAY(g_CaptureEndpoints))' -New '#define g_cCaptureEndpoints 0'
 
+# Boom 3D 2.3.0 advertises enhanced multichannel surround. Make the actual
+# virtual endpoint negotiate stereo, 5.1-surround and 7.1-surround instead of
+# leaving Microsoft's sample at its stereo-only default.
+Set-PulseFxSpeakerFormats -SampleRoot $PreparedRoot
+
 $infPath = Join-Path $PreparedRoot 'Source\Main\SimpleAudioSample.inx'
 Replace-Required -Path $infPath -Old 'ROOT\SimpleAudioSample' -New 'ROOT\PulseFXVirtualAudio'
 Replace-Required -Path $infPath -Old 'ProviderName = "TODO-Set-Provider"' -New 'ProviderName = "PulseFX"'
@@ -101,6 +108,9 @@ $marker = @(
     "revision=$UpstreamRevision",
     "sample=audio/simpleaudiosample",
     "capture_endpoints=disabled",
+    "render_formats=stereo,5.1-surround,7.1-surround",
+    "sample_rate=48000",
+    "bits_per_sample=16",
     "hardware_id=ROOT\PulseFXVirtualAudio"
 ) -join "`r`n"
 Set-Content -LiteralPath (Join-Path $PreparedRoot 'PULSEFX_UPSTREAM.txt') -Value $marker -Encoding ascii
@@ -150,6 +160,7 @@ if (-not $package) {
 if (Test-Path $OutRoot) { Remove-Item -LiteralPath $OutRoot -Recurse -Force }
 New-Item -ItemType Directory -Path $OutRoot -Force | Out-Null
 Copy-Item -Path (Join-Path $package.FullName '*') -Destination $OutRoot -Recurse -Force
+Copy-Item -LiteralPath (Join-Path $PreparedRoot 'PULSEFX_UPSTREAM.txt') -Destination $OutRoot -Force
 
 Write-Host "PulseFX virtual-audio package copied to: $OutRoot"
 Write-Host 'This script intentionally does not enable test-signing, disable Secure Boot, or install the driver.'

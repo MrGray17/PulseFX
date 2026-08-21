@@ -6,24 +6,28 @@
 
 namespace pulsefx::windows {
 
-enum class StereoSampleEncoding {
+enum class SampleEncoding {
     Float32,
     Pcm16,
 };
 
-inline void decodeStereoSamples(
+// Backward-compatible alias for older relay tests/callers.
+using StereoSampleEncoding = SampleEncoding;
+
+inline void decodeInterleavedSamples(
     const void* source,
     std::size_t frames,
-    StereoSampleEncoding encoding,
+    std::size_t channels,
+    SampleEncoding encoding,
     float* destination) noexcept {
-    if (!destination || frames == 0) return;
-    const std::size_t samples = frames * 2;
+    if (!destination || frames == 0 || channels == 0) return;
+    const std::size_t samples = frames * channels;
     if (!source) {
         std::fill_n(destination, samples, 0.0f);
         return;
     }
 
-    if (encoding == StereoSampleEncoding::Float32) {
+    if (encoding == SampleEncoding::Float32) {
         std::memcpy(destination, source, samples * sizeof(float));
         return;
     }
@@ -33,6 +37,14 @@ inline void decodeStereoSamples(
     for (std::size_t i = 0; i < samples; ++i) {
         destination[i] = static_cast<float>(input[i]) * scale;
     }
+}
+
+inline void decodeStereoSamples(
+    const void* source,
+    std::size_t frames,
+    StereoSampleEncoding encoding,
+    float* destination) noexcept {
+    decodeInterleavedSamples(source, frames, 2, encoding, destination);
 }
 
 } // namespace pulsefx::windows

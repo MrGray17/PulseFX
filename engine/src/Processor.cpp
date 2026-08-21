@@ -16,6 +16,7 @@ void Processor::prepare(float sampleRate) noexcept {
     fidelity_.prepare(sampleRate_);
     clarity_.prepare(sampleRate_);
     dynamics_.prepare(sampleRate_);
+    pitchShifter_.prepare(sampleRate_);
     spatialSurround_.prepare(sampleRate_);
     ambience_.prepare(sampleRate_);
     stereo_.prepare(sampleRate_);
@@ -36,6 +37,7 @@ void Processor::setParameters(const ProcessorParameters& parameters) noexcept {
     parameters_.surround = std::clamp(parameters_.surround, 0.0f, 1.0f);
     parameters_.ambience = std::clamp(parameters_.ambience, 0.0f, 1.0f);
     parameters_.dynamics = std::clamp(parameters_.dynamics, 0.0f, 1.0f);
+    parameters_.pitchSemitones = std::clamp(parameters_.pitchSemitones, -5.0f, 5.0f);
 
     // Match the reference product's documented effect compatibility while
     // keeping transitions smoothed internally.
@@ -52,6 +54,7 @@ void Processor::setParameters(const ProcessorParameters& parameters) noexcept {
     bass_.setAmount(parameters_.bass);
     fidelity_.setAmount(parameters_.fidelity);
     clarity_.setAmount(parameters_.clarity);
+    pitchShifter_.setSemitones(parameters_.pitchSemitones);
     spatialSurround_.setAmount(parameters_.surround);
     ambience_.setAmount(parameters_.ambience);
     stereo_.setAmount(parameters_.space);
@@ -67,18 +70,26 @@ void Processor::reset() noexcept {
     fidelity_.reset();
     clarity_.reset();
     dynamics_.reset();
+    pitchShifter_.reset();
     spatialSurround_.reset();
     ambience_.reset();
     stereo_.reset();
     limiter_.reset();
 }
 
+std::size_t Processor::latencySamples() const noexcept {
+    return limiter_.latencySamples() + pitchShifter_.latencySamples();
+}
+
 void Processor::processInterleaved(float* samples, std::size_t frames, std::size_t channels) noexcept {
-    if (!samples || frames == 0 || channels < 2) return;
+    if (!samples || frames == 0 || channels < 2 || parameters_.bypass) return;
+
+    // Tone/dynamics stage. Pitch is block-based, so the chain is deliberately
+    // split around it rather than allocating or buffering inside a per-sample
+    // processor.
     for (std::size_t frame = 0; frame < frames; ++frame) {
         float& leftOut = samples[frame * channels];
         float& rightOut = samples[frame * channels + 1];
-        if (parameters_.bypass) continue;
         const float gain = preampGain_.next();
         float left = std::isfinite(leftOut) ? leftOut * gain : 0.0f;
         float right = std::isfinite(rightOut) ? rightOut * gain : 0.0f;
@@ -88,13 +99,24 @@ void Processor::processInterleaved(float* samples, std::size_t frames, std::size
         fidelity_.processStereo(left, right);
         clarity_.processStereo(left, right);
         dynamics_.processStereo(left, right);
+        leftOut = left;
+        rightOut = right;
+    }
 
-        // All spatial processors keep their history warm. Compatibility rules
-        // above ensure only the requested path has a non-zero target amount.
+    if (channels == 2 && pitchShifter_.active()) {
+        pitchShifter_.processInterleaved(samples, frames);
+    }
+
+    // Spatial/output-protection stage. Keeping the limiter last means every
+    // effect, including pitch, is covered by the same true-peak ceiling.
+    for (std::size_t frame = 0; frame < frames; ++frame) {
+        float& leftOut = samples[frame * channels];
+        float& rightOut = samples[frame * channels + 1];
+        float left = std::isfinite(leftOut) ? leftOut : 0.0f;
+        float right = std::isfinite(rightOut) ? rightOut : 0.0f;
         spatialSurround_.processStereo(left, right);
         ambience_.processStereo(left, right);
         stereo_.processStereo(left, right);
-
         limiter_.processStereo(left, right);
         leftOut = left;
         rightOut = right;

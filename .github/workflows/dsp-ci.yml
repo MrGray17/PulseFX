@@ -38,6 +38,35 @@ jobs:
       - name: Test
         run: ctest --test-dir build -C Debug --output-on-failure
 
+  driver:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and validate PulseFX virtual audio driver
+        shell: pwsh
+        run: ./windows/driver/build-driver-ci.ps1 -Configuration Release -Platform x64
+      - name: Verify driver package
+        shell: pwsh
+        run: |
+          $root = 'windows/driver/out-ci'
+          $sys = Get-ChildItem -Path $root -Filter '*.sys' | Select-Object -First 1
+          $inf = Get-ChildItem -Path $root -Filter '*.inf' | Select-Object -First 1
+          $cat = Get-ChildItem -Path $root -Filter '*.cat' | Select-Object -First 1
+          if (-not $sys) { throw 'Virtual audio driver .sys was not produced.' }
+          if (-not $inf) { throw 'Virtual audio driver .inf was not produced.' }
+          if (-not $cat) { throw 'Virtual audio driver catalog was not produced.' }
+          $manifest = Get-Content -Raw (Join-Path $root 'PULSEFX_BUILD.txt')
+          if (-not $manifest.Contains('render_formats=stereo,5.1-surround,7.1-surround')) {
+            throw 'Driver manifest does not declare the multichannel format matrix.'
+          }
+      - name: Upload unsigned driver package
+        uses: actions/upload-artifact@v4
+        with:
+          name: pulsefx-virtual-audio-driver-unsigned
+          path: windows/driver/out-ci/**
+          if-no-files-found: error
+          retention-days: 7
+
   quality-lab:
     runs-on: ubuntu-latest
     steps:
@@ -65,7 +94,7 @@ jobs:
 
   package-windows:
     runs-on: windows-latest
-    needs: [native, desktop, quality-lab]
+    needs: [native, driver, desktop, quality-lab]
     steps:
       - uses: actions/checkout@v4
       - name: Configure native Release build
