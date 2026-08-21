@@ -19,6 +19,8 @@ struct RelayStats {
     std::uint64_t overruns{0};
     std::uint64_t capturedFrames{0};
     std::uint64_t renderedFrames{0};
+    std::uint64_t bufferedFrames{0};
+    float clockCorrectionPpm{0.0f};
 };
 
 class WasapiRelay {
