@@ -4,6 +4,25 @@
 #include <cstring>
 
 namespace pulsefx::windows {
+namespace {
+
+bool sameCorrectionBand(const CorrectionBand& a, const CorrectionBand& b) noexcept {
+    return a.frequency == b.frequency &&
+        a.q == b.q &&
+        a.gainDb == b.gainDb &&
+        a.type == b.type &&
+        a.enabled == b.enabled;
+}
+
+bool sameHeadphoneProfile(const HeadphoneProfile& a, const HeadphoneProfile& b) noexcept {
+    if (a.preampDb != b.preampDb) return false;
+    for (std::size_t index = 0; index < a.bands.size(); ++index) {
+        if (!sameCorrectionBand(a.bands[index], b.bands[index])) return false;
+    }
+    return true;
+}
+
+} // namespace
 
 bool ApoProcessorBridge::prepare(float sampleRate, std::size_t inputChannels) noexcept {
     if (!std::isfinite(sampleRate) || sampleRate < 8000.0f || sampleRate > 384000.0f ||
@@ -19,8 +38,14 @@ bool ApoProcessorBridge::prepare(float sampleRate, std::size_t inputChannels) no
         inputChannels_ = 0;
         return false;
     }
+
+    // applyControlState() may have been called before prepare. Reset the applied
+    // baseline while preserving that pending snapshot so the first prepared
+    // application cannot be accidentally optimized away by delta detection.
+    const ApoControlState pending = control_;
+    control_ = ApoControlState{};
     prepared_ = true;
-    applyControlState(control_);
+    applyControlState(pending);
     return true;
 }
 
@@ -31,6 +56,7 @@ void ApoProcessorBridge::reset() noexcept {
 }
 
 void ApoProcessorBridge::applyControlState(const ApoControlState& state) noexcept {
+    const ApoControlState previous = control_;
     control_ = state;
     if (!prepared_) return;
 
@@ -39,18 +65,36 @@ void ApoProcessorBridge::applyControlState(const ApoControlState& state) noexcep
         // Multichannel sources already receive directional rendering before the
         // stereo chain. Applying the stereo HRTF effect again would double-
         // spatialize positional cues.
-        multichannel_.setAmount(processorState.surround);
+        if (previous.processor.surround != state.processor.surround) {
+            multichannel_.setAmount(processorState.surround);
+        }
         processorState.surround = 0.0f;
     } else {
-        multichannel_.setAmount(0.0f);
+        if (previous.processor.surround != 0.0f) multichannel_.setAmount(0.0f);
     }
 
+    // Processor::setParameters is itself delta-aware. Calling it for every
+    // snapshot is therefore cheap for unchanged stages and preserves the
+    // smoothed state of every filter that did not actually move.
     processor_.setParameters(processorState);
+
+    // EQ updates used to rebuild all 31 bands for every UI command, including
+    // unrelated controls such as Pitch. Only changed bands may touch their
+    // coefficient calculators on the realtime packet boundary now.
     for (std::size_t band = 0; band < state.eqDb.size(); ++band) {
-        processor_.equalizer().setBandGain(band, state.eqDb[band]);
+        if (state.eqDb[band] != previous.eqDb[band]) {
+            processor_.equalizer().setBandGain(band, state.eqDb[band]);
+        }
     }
-    processor_.headphoneCorrection().setProfile(state.headphoneProfile);
-    processor_.headphoneCorrection().setEnabled(state.headphoneCorrectionEnabled);
+
+    // Loading a headphone model can legitimately rebuild its small filter bank,
+    // but ordinary control changes must never redo that work.
+    if (!sameHeadphoneProfile(state.headphoneProfile, previous.headphoneProfile)) {
+        processor_.headphoneCorrection().setProfile(state.headphoneProfile);
+    }
+    if (state.headphoneCorrectionEnabled != previous.headphoneCorrectionEnabled) {
+        processor_.headphoneCorrection().setEnabled(state.headphoneCorrectionEnabled);
+    }
 }
 
 void ApoProcessorBridge::process(float* interleavedStereo, std::size_t frames) noexcept {
