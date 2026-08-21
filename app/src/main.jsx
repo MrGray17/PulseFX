@@ -11,29 +11,51 @@ const presets = {
   Movies: [2,2,2,2,2,1,1,1,0,0,0,0,0,1,1,2,2,2,2,2,2,2,2,1,1,1,1,1,0,0,0],
   Vocal: [-2,-2,-2,-2,-2,-2,-1,-1,-1,0,0,0,1,1,1,2,2,3,3,3,3,2,2,1,1,1,0,0,-1,-1,-1],
 };
+
 const effects = [
-  { id: 'surround', label: '3D Surround', icon: Layers3 },
-  { id: 'fidelity', label: 'Fidelity', icon: Sparkles },
-  { id: 'spatial', label: 'Spatial', icon: Waves },
-  { id: 'ambience', label: 'Ambience', icon: Radio },
-  { id: 'night', label: 'Night Mode', icon: Moon },
+  { id: 'surround', label: '3D Surround', icon: Layers3, description: 'Binaural HRTF rendering with cross-ear timing and spectral cues.' },
+  { id: 'fidelity', label: 'Fidelity', icon: Sparkles, description: 'Adaptive detail lift that favors quieter spectral information.' },
+  { id: 'spatial', label: 'Spatial', icon: Waves, description: 'Frequency-aware stereo expansion while keeping low frequencies anchored.' },
+  { id: 'ambience', label: 'Ambience', icon: Radio, description: 'Short natural early reflections without a long artificial reverb tail.' },
+  { id: 'night', label: 'Night Mode', icon: Moon, description: 'Tighter dynamics for clearer quiet detail and less aggressive peaks.' },
 ];
+
+const incompatible = {
+  surround: ['spatial', 'ambience', 'night'],
+  spatial: ['surround', 'ambience'],
+  ambience: ['surround', 'spatial', 'night'],
+  night: ['surround', 'ambience'],
+  fidelity: [],
+};
 
 function App() {
   const [enabled, setEnabled] = useState(true);
   const [activeEffect, setActiveEffect] = useState('fidelity');
   const [effectEnabled, setEffectEnabled] = useState({ fidelity: true, spatial: true });
-  const [intensity, setIntensity] = useState(42);
+  const [effectAmounts, setEffectAmounts] = useState({ surround: 48, fidelity: 42, spatial: 34, ambience: 30, night: 55 });
   const [preamp, setPreamp] = useState(0);
   const [preset, setPreset] = useState('Music');
   const [eq, setEq] = useState([...presets.Music]);
   const [headphoneEq, setHeadphoneEq] = useState(false);
   const active = effects.find((effect) => effect.id === activeEffect) ?? effects[0];
   const ActiveIcon = active.icon;
+  const intensity = effectAmounts[activeEffect] ?? 0;
   const curve = useMemo(() => eq.map((value) => 50 - value * 2.7), [eq]);
+
   const choosePreset = (name) => { setPreset(name); setEq([...presets[name]]); };
   const updateBand = (index, value) => { const next = [...eq]; next[index] = Number(value); setEq(next); setPreset('Custom'); };
-  const toggleEffect = (id) => { setActiveEffect(id); setEffectEnabled((current) => ({ ...current, [id]: !current[id] })); };
+  const updateEffectAmount = (value) => setEffectAmounts((current) => ({ ...current, [activeEffect]: Number(value) }));
+  const toggleEffect = (id) => {
+    setActiveEffect(id);
+    setEffectEnabled((current) => {
+      const turningOn = !current[id];
+      const next = { ...current, [id]: turningOn };
+      if (turningOn) {
+        for (const blocked of incompatible[id] ?? []) next[blocked] = false;
+      }
+      return next;
+    });
+  };
 
   return <main className="app-shell">
     <header className="titlebar">
@@ -41,6 +63,7 @@ function App() {
       <button className="output-pill"><Headphones size={15}/><span><small>OUTPUT</small>Default audio device</span><ChevronDown size={14}/></button>
       <button className={enabled ? 'master on' : 'master'} onClick={() => setEnabled(!enabled)}><Power size={17}/><span>{enabled ? 'On' : 'Off'}</span></button>
     </header>
+
     <section className={enabled ? 'workspace' : 'workspace disabled'}>
       <aside className="sidebar">
         <button className="nav active"><Sparkles size={18}/><span>Enhance</span></button>
@@ -48,16 +71,29 @@ function App() {
         <button className="nav"><Headphones size={18}/><span>Headphones</span></button>
         <button className="nav"><Radio size={18}/><span>Apps</span></button>
       </aside>
+
       <div className="content">
         <section className="enhancer-card">
           <div className="effects-strip">
-            {effects.map((effect) => { const Icon = effect.icon; const on = Boolean(effectEnabled[effect.id]); return <button key={effect.id} onClick={() => toggleEffect(effect.id)} className={activeEffect === effect.id ? 'effect-chip selected' : 'effect-chip'}><span className={on ? 'effect-led on' : 'effect-led'} /><Icon size={17}/><span>{effect.label}</span></button>; })}
+            {effects.map((effect) => {
+              const Icon = effect.icon;
+              const on = Boolean(effectEnabled[effect.id]);
+              return <button key={effect.id} onClick={() => toggleEffect(effect.id)} className={activeEffect === effect.id ? 'effect-chip selected' : 'effect-chip'}>
+                <span className={on ? 'effect-led on' : 'effect-led'} />
+                <Icon size={17}/><span>{effect.label}</span>
+              </button>;
+            })}
           </div>
+
           <div className="focus-zone">
-            <div className="focus-copy"><p className="kicker">ACTIVE EFFECT</p><h1>{active.label}</h1><p>Shape the effect around the source without crushing transients or destabilizing the stereo image.</p></div>
+            <div className="focus-copy">
+              <p className="kicker">{effectEnabled[activeEffect] ? 'ACTIVE EFFECT' : 'EFFECT OFF'}</p>
+              <h1>{active.label}</h1>
+              <p>{active.description}</p>
+            </div>
             <div className="dial-wrap">
               <div className="dial-halo" style={{ '--intensity': `${intensity * 3.6}deg` }}><div className="dial"><ActiveIcon size={34}/><strong>{intensity}%</strong><span>Intensity</span></div></div>
-              <input aria-label={`${active.label} intensity`} className="dial-range" type="range" min="0" max="100" value={intensity} onChange={(event) => setIntensity(Number(event.target.value))}/>
+              <input aria-label={`${active.label} intensity`} className="dial-range" type="range" min="0" max="100" value={intensity} onChange={(event) => updateEffectAmount(event.target.value)}/>
             </div>
             <div className="quick-controls">
               <label><span><small>PREAMP</small><strong>{preamp > 0 ? '+' : ''}{preamp.toFixed(1)} dB</strong></span><input type="range" min="-12" max="9" step="0.5" value={preamp} onChange={(event) => setPreamp(Number(event.target.value))}/></label>
@@ -65,6 +101,7 @@ function App() {
             </div>
           </div>
         </section>
+
         <section className="eq-card">
           <div className="eq-header"><div><p className="kicker">TONE SHAPING</p><h2>31-band equalizer</h2></div><div className="preset-row">{Object.keys(presets).map((name) => <button key={name} className={preset === name ? 'preset active' : 'preset'} onClick={() => choosePreset(name)}>{name}</button>)}{preset === 'Custom' && <button className="preset active">Custom</button>}</div></div>
           <div className="eq-viewport"><div className="curve" aria-hidden="true"><svg viewBox="0 0 930 110" preserveAspectRatio="none"><polyline points={curve.map((y, index) => `${index * 31},${y}`).join(' ')} /></svg></div><div className="eq-grid">{bands.map((band, index) => <label className="eq-band" key={band}><span className="db">{eq[index] > 0 ? '+' : ''}{eq[index]}</span><input aria-label={`${band} Hz`} type="range" min="-12" max="12" step="1" value={eq[index]} onChange={(event) => updateBand(index, event.target.value)}/><span className="frequency">{band}</span></label>)}</div></div>
