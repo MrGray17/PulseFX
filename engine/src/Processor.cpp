@@ -8,6 +8,7 @@ float dbToLinear(float db) noexcept { return std::pow(10.0f, db / 20.0f); }
 }
 
 void Processor::prepare(float sampleRate) noexcept {
+    const ProcessorParameters desired = parameters_;
     sampleRate_ = std::clamp(sampleRate, 8000.0f, 384000.0f);
     preampGain_.prepare(sampleRate_, 30.0f, 1.0f);
     equalizer_.prepare(sampleRate_);
@@ -24,7 +25,13 @@ void Processor::prepare(float sampleRate) noexcept {
     limiter_.setCeilingDb(-1.0f);
     limiter_.setLookaheadMs(5.0f);
     limiter_.setReleaseMs(110.0f);
-    setParameters(parameters_);
+
+    // prepare() resets some stage internals (notably preamp and pitch). Make the
+    // first post-prepare parameter application compare against a neutral logical
+    // baseline so desired non-default controls are always restored. Later live
+    // updates remain delta-only.
+    parameters_ = ProcessorParameters{};
+    setParameters(desired);
 }
 
 void Processor::setParameters(const ProcessorParameters& parameters) noexcept {
