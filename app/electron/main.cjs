@@ -1,17 +1,28 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, globalShortcut, Menu, Tray } = require('electron');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const readline = require('node:readline');
+const { pathToFileURL } = require('node:url');
 const autoeq = require('./autoeq.cjs');
+const radio = require('./radio.cjs');
 
 const allowedCommands = new Set([
   'ping', 'status', 'devices', 'apps', 'quit', 'output', 'enabled', 'night',
   'headphone_enable', 'headphone_profile', 'preamp', 'bass', 'clarity', 'fidelity', 'spatial',
   'surround', 'ambience', 'dynamics', 'pitch', 'eq', 'app_volume', 'app_mute',
 ]);
+const audioExtensions = new Set(['.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg', '.opus', '.webm']);
+const defaultShortcuts = {
+  toggleProcessing: 'CommandOrControl+Alt+B',
+  toggleSurround: 'CommandOrControl+Alt+3',
+  showEqualizer: 'CommandOrControl+Alt+E',
+  showPlayer: 'CommandOrControl+Alt+P',
+};
+const quickState = { enabled: true, surround: false };
 
 let mainWindow = null;
+let tray = null;
 let hostProcess = null;
 let hostReadline = null;
 let hostStartup = null;
@@ -33,15 +44,27 @@ function loadSettings() {
   }
 }
 
+function normalizeShortcuts(value) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const result = {};
+  for (const [action, fallback] of Object.entries(defaultShortcuts)) {
+    const candidate = typeof source[action] === 'string' ? source[action].trim() : '';
+    result[action] = candidate.length > 0 && candidate.length <= 120 ? candidate : fallback;
+  }
+  return result;
+}
+
 function saveSettings(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('settings must be an object');
   }
+  const persisted = { ...value, shortcuts: normalizeShortcuts(value.shortcuts) };
   const file = settingsPath();
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temporary = `${file}.tmp`;
-  fs.writeFileSync(temporary, JSON.stringify(value, null, 2), 'utf8');
+  fs.writeFileSync(temporary, JSON.stringify(persisted, null, 2), 'utf8');
   fs.renameSync(temporary, file);
+  registerShortcuts(persisted.shortcuts);
   return true;
 }
 
@@ -78,6 +101,20 @@ function rejectStartup(error) {
 
 function broadcast(channel, payload) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
+}
+
+function showWindow(tab) {
+  if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+  mainWindow.show();
+  mainWindow.restore();
+  mainWindow.focus();
+  if (tab) broadcast('pulsefx:quick-action', { action: 'tab', tab });
+}
+
+function updateQuickState(name, args) {
+  if (name === 'enabled' && args.length === 1) quickState.enabled = String(args[0]) === 'true' || args[0] === true || args[0] === 1;
+  if (name === 'surround' && args.length === 1) quickState.surround = Number(args[0]) > 0.001;
+  refreshTrayMenu();
 }
 
 function scheduleRestart() {
@@ -143,7 +180,10 @@ async function startHost() {
       const request = pending.shift();
       clearTimeout(request.timer);
       if (message && message.ok === false) request.reject(new Error(message.error || 'native host command failed'));
-      else request.resolve(message);
+      else {
+        updateQuickState(request.name, request.args);
+        request.resolve(message);
+      }
     } else {
       broadcast('pulsefx:event', message);
     }
@@ -186,8 +226,6 @@ function quoteHostArg(value) {
 
 async function commandNative(name, args = []) {
   if (!allowedCommands.has(name)) throw new Error('unsupported native host command');
-  // 12 typed headphone filters require 2 + 12*4 = 50 arguments. Keep the
-  // protocol globally bounded while leaving two slots for future metadata.
   if (!Array.isArray(args) || args.length > 52) throw new Error('invalid command arguments');
   for (const arg of args) {
     if (!['string', 'number', 'boolean'].includes(typeof arg)) throw new Error('invalid command argument type');
@@ -204,7 +242,7 @@ async function commandNative(name, args = []) {
       if (index >= 0) pending.splice(index, 1);
       reject(new Error(`native host timed out handling ${name}`));
     }, 4000);
-    pending.push({ resolve, reject, timer });
+    pending.push({ name, args, resolve, reject, timer });
     hostProcess.stdin.write(`${line}\n`, 'utf8', (error) => {
       if (!error) return;
       const index = pending.findIndex((entry) => entry.resolve === resolve);
@@ -213,6 +251,69 @@ async function commandNative(name, args = []) {
       reject(error);
     });
   });
+}
+
+function quickToggleProcessing() {
+  commandNative('enabled', [!quickState.enabled]).catch((error) => broadcast('pulsefx:host-state', { running: false, error: error.message }));
+}
+
+function quickToggleSurround() {
+  const enabled = !quickState.surround;
+  broadcast('pulsefx:quick-action', { action: 'effect', id: 'surround', enabled });
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    commandNative('surround', [enabled ? 0.48 : 0]).catch(() => {});
+  }
+}
+
+function registerShortcuts(value) {
+  if (!app.isReady()) return;
+  globalShortcut.unregisterAll();
+  const shortcuts = normalizeShortcuts(value);
+  const actions = {
+    toggleProcessing: quickToggleProcessing,
+    toggleSurround: quickToggleSurround,
+    showEqualizer: () => showWindow('equalizer'),
+    showPlayer: () => showWindow('player'),
+  };
+  for (const [action, accelerator] of Object.entries(shortcuts)) {
+    try {
+      globalShortcut.register(accelerator, actions[action]);
+    } catch {
+      // Invalid/OS-reserved accelerators fail closed. Settings UI can replace it.
+    }
+  }
+}
+
+function trayTemplate() {
+  return [
+    { label: 'Open PulseFX', click: () => showWindow() },
+    { type: 'separator' },
+    { label: 'Audio Processing', type: 'checkbox', checked: quickState.enabled, click: quickToggleProcessing },
+    { label: '3D Surround', type: 'checkbox', checked: quickState.surround, click: quickToggleSurround },
+    {
+      label: 'Equalizer Presets', submenu: ['Flat','Pop','Loud','Classical','Party','Reggae','Movie','Hip-hop','Jazz','Deep','Dubstep','Trap']
+        .map((preset) => ({ label: preset, click: () => { showWindow('equalizer'); broadcast('pulsefx:quick-action', { action: 'preset', preset }); } })),
+    },
+    { type: 'separator' },
+    { label: 'Apps Volume Controller', click: () => showWindow('apps') },
+    { label: 'Audio Player', click: () => showWindow('player') },
+    { label: 'Internet Radio', click: () => showWindow('radio') },
+    { type: 'separator' },
+    { label: 'Quit PulseFX', click: () => app.quit() },
+  ];
+}
+
+function refreshTrayMenu() {
+  if (tray) tray.setContextMenu(Menu.buildFromTemplate(trayTemplate()));
+}
+
+async function createTray() {
+  if (tray) return;
+  const icon = await app.getFileIcon(process.execPath, { size: 'small' });
+  tray = new Tray(icon);
+  tray.setToolTip('PulseFX');
+  tray.on('double-click', () => showWindow());
+  refreshTrayMenu();
 }
 
 function createWindow() {
@@ -246,7 +347,7 @@ ipcMain.handle('pulsefx:command', (_event, request) => {
   if (!request || typeof request.name !== 'string') throw new Error('invalid command request');
   return commandNative(request.name, request.args || []);
 });
-ipcMain.handle('pulsefx:settings:load', () => loadSettings());
+ipcMain.handle('pulsefx:settings:load', () => ({ ...loadSettings(), shortcuts: normalizeShortcuts(loadSettings().shortcuts) }));
 ipcMain.handle('pulsefx:settings:save', (_event, value) => saveSettings(value));
 ipcMain.handle('pulsefx:autoeq:list', async () => ({
   revision: autoeq.REVISION,
@@ -266,9 +367,35 @@ ipcMain.handle('pulsefx:autoeq:apply', async (_event, modelPath) => {
     filters: profile.filters.length,
   };
 });
+ipcMain.handle('pulsefx:media:open', async () => {
+  const result = await dialog.showOpenDialog(mainWindow ?? undefined, {
+    title: 'Add audio to PulseFX',
+    properties: ['openFile', 'multiSelections'],
+    filters: [
+      { name: 'Audio', extensions: ['mp3','wav','flac','m4a','aac','ogg','opus','webm'] },
+      { name: 'All files', extensions: ['*'] },
+    ],
+  });
+  if (result.canceled) return [];
+  return result.filePaths
+    .filter((file) => audioExtensions.has(path.extname(file).toLowerCase()))
+    .slice(0, 500)
+    .map((file) => ({
+      id: file,
+      name: path.basename(file, path.extname(file)),
+      fileUrl: pathToFileURL(file).href,
+    }));
+});
+ipcMain.handle('pulsefx:radio:search', async (_event, query) => {
+  if (typeof query !== 'string' || query.length > 100) throw new Error('invalid radio search');
+  return radio.searchStations(query);
+});
+ipcMain.handle('pulsefx:radio:click', async (_event, stationuuid) => radio.recordClick(stationuuid));
 
 app.whenReady().then(async () => {
   createWindow();
+  await createTray();
+  registerShortcuts(loadSettings().shortcuts);
   try { await startHost(); } catch (error) {
     broadcast('pulsefx:host-state', { running: false, error: error.message });
     scheduleRestart();
@@ -277,14 +404,17 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
+  // Keep the system-wide engine and Quick Controls alive in the tray.
 });
 
 app.on('before-quit', () => {
   appQuitting = true;
+  globalShortcut.unregisterAll();
   if (restarting) clearTimeout(restarting);
   rejectStartup(new Error('PulseFX is shutting down'));
   rejectPending(new Error('PulseFX is shutting down'));
   if (hostProcess?.stdin?.writable) hostProcess.stdin.write('quit\n');
   hostProcess?.kill();
+  tray?.destroy();
+  tray = null;
 });
