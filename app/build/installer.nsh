@@ -30,20 +30,34 @@
         Abort
       ${EndIf}
 
+      ; Driver binding and DN_STARTED can appear shortly after PnPUtil returns.
+      ; Give Plug and Play a bounded propagation window, but never accept an
+      ; unhealthy device merely because staging itself succeeded.
       DetailPrint "Verifying PulseFX virtual audio driver binding..."
+      StrCpy $2 0
+
+    pulsefx_health_retry:
       nsExec::ExecToStack '"$INSTDIR\resources\native\pulsefx_device_setup.exe" check'
       Pop $0
       Pop $1
-      ${If} $0 != 0
-        DetailPrint "Device health output: $1"
-        DetailPrint "Removing unhealthy PulseFX virtual device..."
-        nsExec::ExecToStack '"$INSTDIR\resources\native\pulsefx_device_setup.exe" remove'
-        Pop $2
-        Pop $3
-        MessageBox MB_ICONSTOP|MB_OK "The PulseFX driver package was staged, but the virtual audio device did not bind and start correctly. Setup removed the incomplete device and will stop."
-        Abort
+      ${If} $0 == 0
+        Goto pulsefx_driver_healthy
+      ${EndIf}
+      IntOp $2 $2 + 1
+      ${If} $2 < 20
+        Sleep 250
+        Goto pulsefx_health_retry
       ${EndIf}
 
+      DetailPrint "Device health output: $1"
+      DetailPrint "Removing unhealthy PulseFX virtual device..."
+      nsExec::ExecToStack '"$INSTDIR\resources\native\pulsefx_device_setup.exe" remove'
+      Pop $3
+      Pop $4
+      MessageBox MB_ICONSTOP|MB_OK "The PulseFX driver package was staged, but the virtual audio device did not bind and start correctly. Setup removed the incomplete device and will stop."
+      Abort
+
+    pulsefx_driver_healthy:
       DetailPrint "PulseFX virtual audio device is installed, bound, and started."
       Goto pulsefx_driver_done
 
