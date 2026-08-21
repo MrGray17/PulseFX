@@ -309,13 +309,14 @@ test('player edge cases, output exclusion and health errors are handled', async 
 
   await page.getByRole('button', { name: 'Player' }).click();
   await page.getByRole('button', { name: /Add audio/ }).click();
+  const sunriseTrack = page.locator('.track-main').filter({ hasText: 'Sunrise' });
   await expect(page.getByRole('button', { name: 'Night Drive', exact: true })).toHaveCount(1);
-  await expect(page.getByRole('button', { name: 'Sunrise', exact: true })).toHaveCount(1);
+  await expect(sunriseTrack).toHaveCount(1);
 
   // Re-importing the exact same file set is de-duplicated by stable file id.
   await page.getByRole('button', { name: /Add audio/ }).click();
   await expect(page.getByRole('button', { name: 'Night Drive', exact: true })).toHaveCount(1);
-  await expect(page.getByRole('button', { name: 'Sunrise', exact: true })).toHaveCount(1);
+  await expect(sunriseTrack).toHaveCount(1);
 
   await expect(page.locator('.transport-meta strong')).toHaveText('Night Drive');
   await page.getByRole('button', { name: 'Next track' }).click();
