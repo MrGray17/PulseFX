@@ -41,12 +41,12 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $helper = './build/Debug/pulsefx_device_setup.exe'
+          $helper = (Resolve-Path './build/Debug/pulsefx_device_setup.exe').Path
           if (-not (Test-Path -LiteralPath $helper)) { throw 'PulseFX device setup helper was not built.' }
-          & $helper unknown
-          if ($LASTEXITCODE -ne 64) { throw "Expected helper usage exit code 64, got $LASTEXITCODE" }
-          & $helper exists
-          if ($LASTEXITCODE -notin @(0, 2)) { throw "Unexpected helper exists exit code: $LASTEXITCODE" }
+          $usage = Start-Process -FilePath $helper -ArgumentList 'unknown' -Wait -PassThru -NoNewWindow
+          if ($usage.ExitCode -ne 64) { throw "Expected helper usage exit code 64, got $($usage.ExitCode)" }
+          $exists = Start-Process -FilePath $helper -ArgumentList 'exists' -Wait -PassThru -NoNewWindow
+          if ($exists.ExitCode -notin @(0, 2)) { throw "Unexpected helper exists exit code: $($exists.ExitCode)" }
       - name: Smoke-test native host process
         if: runner.os == 'Windows'
         shell: pwsh
