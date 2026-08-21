@@ -1,20 +1,29 @@
 #pragma once
 #include "Biquad.h"
+#include "SmoothedValue.h"
 #include <array>
 #include <cstddef>
 
 namespace pulsefx {
 
+enum class CorrectionFilterType {
+    Peaking,
+    LowShelf,
+    HighShelf,
+};
+
 struct CorrectionBand {
     float frequency{1000.0f};
     float q{1.0f};
     float gainDb{0.0f};
+    CorrectionFilterType type{CorrectionFilterType::Peaking};
     bool enabled{false};
 };
 
 struct HeadphoneProfile {
     static constexpr std::size_t kMaxBands = 12;
     std::array<CorrectionBand, kMaxBands> bands{};
+    float preampDb{0.0f};
 };
 
 class HeadphoneCorrection {
@@ -30,6 +39,7 @@ private:
     float sampleRate_{48000.0f};
     bool enabled_{false};
     HeadphoneProfile profile_{};
+    SmoothedValue profileGain_{};
     std::array<Biquad, HeadphoneProfile::kMaxBands> left_{};
     std::array<Biquad, HeadphoneProfile::kMaxBands> right_{};
 };
