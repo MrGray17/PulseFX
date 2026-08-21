@@ -37,6 +37,16 @@ jobs:
         run: cmake --build build --config Debug
       - name: Test
         run: ctest --test-dir build -C Debug --output-on-failure
+      - name: Verify virtual-device setup helper CLI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $helper = './build/Debug/pulsefx_device_setup.exe'
+          if (-not (Test-Path -LiteralPath $helper)) { throw 'PulseFX device setup helper was not built.' }
+          & $helper unknown
+          if ($LASTEXITCODE -ne 64) { throw "Expected helper usage exit code 64, got $LASTEXITCODE" }
+          & $helper exists
+          if ($LASTEXITCODE -notin @(0, 2)) { throw "Unexpected helper exists exit code: $LASTEXITCODE" }
       - name: Smoke-test native host process
         if: runner.os == 'Windows'
         shell: pwsh
@@ -150,10 +160,17 @@ jobs:
           $sys = Get-ChildItem -Path 'app/driver-package' -Recurse -Filter '*.sys' | Select-Object -First 1
           $cat = Get-ChildItem -Path 'app/driver-package' -Recurse -Filter '*.cat' | Select-Object -First 1
           if (-not $inf -or -not $sys -or -not $cat) { throw 'Architecture-matched driver package is incomplete.' }
-      - name: Configure native Release host
+      - name: Configure native Release components
         run: cmake -S . -B build -A ${{ matrix.cmake_arch }} -DPULSEFX_BUILD_WASAPI_RELAY=ON
-      - name: Build native Release host
-        run: cmake --build build --config Release --target pulsefx_audio_host
+      - name: Build native Release host and device helper
+        run: |
+          cmake --build build --config Release --target pulsefx_audio_host
+          cmake --build build --config Release --target pulsefx_device_setup
+      - name: Verify native Release components
+        shell: pwsh
+        run: |
+          if (-not (Test-Path './build/Release/pulsefx_audio_host.exe')) { throw 'Release audio host was not produced.' }
+          if (-not (Test-Path './build/Release/pulsefx_device_setup.exe')) { throw 'Release device setup helper was not produced.' }
       - name: Install desktop dependencies
         working-directory: app
         run: npm install --no-audit --no-fund
@@ -165,10 +182,13 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: npx electron-builder --win nsis --${{ matrix.arch }}
-      - name: Verify packaged host and driver
+      - name: Verify packaged host, setup helper, and driver
         shell: pwsh
         run: |
           $host = Get-ChildItem -Path 'app/release' -Recurse -Filter 'pulsefx_audio_host.exe' |
+            Where-Object { $_.FullName -match '[\\/]resources[\\/]native[\\/]' } |
+            Select-Object -First 1
+          $helper = Get-ChildItem -Path 'app/release' -Recurse -Filter 'pulsefx_device_setup.exe' |
             Where-Object { $_.FullName -match '[\\/]resources[\\/]native[\\/]' } |
             Select-Object -First 1
           $driver = Get-ChildItem -Path 'app/release' -Recurse -Filter '*.inf' |
@@ -176,6 +196,7 @@ jobs:
             Select-Object -First 1
           $installer = Get-ChildItem -Path 'app/release' -Filter 'PulseFX-Setup-*-${{ matrix.arch }}.exe' | Select-Object -First 1
           if (-not $host) { throw 'Packaged native host is missing.' }
+          if (-not $helper) { throw 'Packaged virtual-device setup helper is missing.' }
           if (-not $driver) { throw 'Packaged virtual audio driver is missing.' }
           if (-not $installer) { throw 'Architecture-specific PulseFX installer was not produced.' }
           Write-Host "Validated installer: $($installer.FullName)"
