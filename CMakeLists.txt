@@ -7,6 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(PULSEFX_BUILD_TESTS "Build PulseFX DSP tests" ON)
 option(PULSEFX_BUILD_APO_BRIDGE "Build the portable Windows APO-to-DSP bridge" ON)
+option(PULSEFX_ENABLE_MYSOFA "Build AES69/SOFA measured-HRTF loading through libmysofa" OFF)
 
 add_library(pulsefx_dsp STATIC
     engine/src/Biquad.cpp
@@ -26,6 +27,20 @@ add_library(pulsefx_dsp STATIC
 
 target_include_directories(pulsefx_dsp PUBLIC engine/include)
 target_compile_definitions(pulsefx_dsp PRIVATE _USE_MATH_DEFINES)
+
+if(PULSEFX_ENABLE_MYSOFA)
+  find_package(mysofa CONFIG REQUIRED)
+  add_library(pulsefx_sofa STATIC engine/optional/SofaHrtfLoader.cpp)
+  target_include_directories(pulsefx_sofa PUBLIC engine/include)
+  target_link_libraries(pulsefx_sofa PUBLIC pulsefx_dsp)
+  if(TARGET mysofa::mysofa-static)
+    target_link_libraries(pulsefx_sofa PRIVATE mysofa::mysofa-static)
+  elseif(TARGET mysofa::mysofa-shared)
+    target_link_libraries(pulsefx_sofa PRIVATE mysofa::mysofa-shared)
+  else()
+    message(FATAL_ERROR "libmysofa package found but no supported CMake target was exported")
+  endif()
+endif()
 
 if(PULSEFX_BUILD_APO_BRIDGE)
   add_library(pulsefx_apo_bridge STATIC windows/apo/PulseFxApoBridge.cpp)
