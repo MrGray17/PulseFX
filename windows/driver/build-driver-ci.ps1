@@ -48,26 +48,41 @@ function Add-WdkNuGetToolsToPath {
     param([Parameter(Mandatory)] [string]$PackagesRoot)
 
     $requiredTools = @('stampinf.exe', 'inf2cat.exe')
-    $toolDirectories = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $toolDirectories = [System.Collections.Generic.List[string]]::new()
 
     foreach ($toolName in $requiredTools) {
-        $matches = Get-ChildItem -LiteralPath $PackagesRoot -Recurse -File -Filter $toolName -ErrorAction SilentlyContinue
-        if (-not $matches) { throw "NuGet WDK restore did not contain required tool: $toolName" }
+        $matches = @(Get-ChildItem -LiteralPath $PackagesRoot -Recurse -File -Filter $toolName -ErrorAction SilentlyContinue)
+        if ($matches.Count -eq 0) { throw "NuGet WDK restore did not contain required tool: $toolName" }
 
-        # Prefer a native x64 host tool on the x64 GitHub runner, but add every
-        # matching parent directory so companion WDK tools remain discoverable.
-        foreach ($match in ($matches | Sort-Object @{ Expression = { if ($_.FullName -match '[\\/]x64[\\/]') { 0 } else { 1 } } }, FullName)) {
-            [void]$toolDirectories.Add($match.Directory.FullName)
+        # GitHub's hosted Windows worker is x64 even when the driver target is
+        # ARM64. Prefer native x64 host tools, then x86, then any remaining
+        # layout. Preserve this order instead of sorting the final directory set.
+        $orderedMatches = $matches | Sort-Object @{
+            Expression = {
+                if ($_.FullName -match '[\\/]x64[\\/]') { 0 }
+                elseif ($_.FullName -match '[\\/]x86[\\/]') { 1 }
+                elseif ($_.FullName -match '[\\/]amd64[\\/]') { 2 }
+                else { 3 }
+            }
+        }, FullName
+
+        foreach ($match in $orderedMatches) {
+            $directory = $match.Directory.FullName
+            if (-not $toolDirectories.Contains($directory)) {
+                $toolDirectories.Add($directory)
+            }
         }
     }
 
     if ($toolDirectories.Count -eq 0) { throw 'No NuGet WDK tool directories were discovered.' }
-    $prefix = ($toolDirectories | Sort-Object) -join ';'
-    $env:PATH = "$prefix;$env:PATH"
+    $env:PATH = "$(($toolDirectories.ToArray()) -join ';');$env:PATH"
 
     foreach ($toolName in $requiredTools) {
         $resolved = Get-Command $toolName -ErrorAction SilentlyContinue
         if (-not $resolved) { throw "WDK tool was found in the package but is still not executable from PATH: $toolName" }
+        if ($resolved.Source -match '[\\/]arm64[\\/]') {
+            throw "Resolved an ARM64 host WDK tool on the x64 CI worker: $($resolved.Source)"
+        }
         Write-Host "WDK tool: $toolName -> $($resolved.Source)"
     }
 }
@@ -177,7 +192,7 @@ $manifest = @(
     "bits_per_sample=16",
     "compiler_warnings_as_errors=true",
     "hosted_prefast=disabled-unavailable",
-    "wdk_tools=nuget-discovered"
+    "wdk_tools=nuget-discovered-x64-host"
 ) -join "`r`n"
 Set-Content -LiteralPath (Join-Path $OutRoot 'PULSEFX_BUILD.txt') -Value $manifest -Encoding ascii
 
