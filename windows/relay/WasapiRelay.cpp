@@ -14,6 +14,7 @@
 #include <atomic>
 #include <cstring>
 #include <future>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -174,6 +175,35 @@ struct WasapiRelay::Impl {
     std::atomic<std::uint64_t> bufferedFrames{0};
     std::atomic<float> clockCorrectionPpm{0.0f};
 
+    std::mutex controlMutex;
+    ApoControlState pendingControl{};
+    std::atomic<std::uint64_t> requestedControlRevision{0};
+    std::atomic<std::uint64_t> appliedControlRevision{0};
+
+    void updateControlState(const ApoControlState& state) noexcept {
+        try {
+            std::lock_guard<std::mutex> lock(controlMutex);
+            pendingControl = state;
+            requestedControlRevision.fetch_add(1, std::memory_order_release);
+        } catch (...) {
+            // Control updates are best effort. The previous valid DSP state
+            // remains active if a control-thread runtime failure occurs.
+        }
+    }
+
+    void applyPendingControlIfAvailable(ApoProcessorBridge& bridge) noexcept {
+        const auto requested = requestedControlRevision.load(std::memory_order_acquire);
+        if (requested == appliedControlRevision.load(std::memory_order_relaxed)) return;
+        if (!controlMutex.try_lock()) return;
+
+        const ApoControlState next = pendingControl;
+        const auto revision = requestedControlRevision.load(std::memory_order_acquire);
+        controlMutex.unlock();
+
+        bridge.applyControlState(next);
+        appliedControlRevision.store(revision, std::memory_order_release);
+    }
+
     bool start(
         const std::wstring& sourceDeviceId,
         const std::wstring& destinationDeviceId,
@@ -189,6 +219,8 @@ struct WasapiRelay::Impl {
         renderedFrames.store(0, std::memory_order_relaxed);
         bufferedFrames.store(0, std::memory_order_relaxed);
         clockCorrectionPpm.store(0.0f, std::memory_order_relaxed);
+        appliedControlRevision.store(0, std::memory_order_relaxed);
+        updateControlState(config.control);
 
         std::promise<bool> ready;
         auto readyFuture = ready.get_future();
@@ -306,7 +338,7 @@ struct WasapiRelay::Impl {
             if (!bridge.prepare(static_cast<float>(sourceFormat.value->nSamplesPerSec), 2)) {
                 hr = AUDCLNT_E_UNSUPPORTED_FORMAT;
             } else {
-                bridge.applyControlState(config.control);
+                applyPendingControlIfAvailable(bridge);
             }
         }
 
@@ -410,7 +442,10 @@ struct WasapiRelay::Impl {
                     }
                     captureClient->ReleaseBuffer(frames);
 
-                    if (config.processInRelay) bridge.process(captureScratch.data(), frames);
+                    if (config.processInRelay) {
+                        applyPendingControlIfAvailable(bridge);
+                        bridge.process(captureScratch.data(), frames);
+                    }
                     if (ring.push(captureScratch.data(), frames)) {
                         overruns.fetch_add(1, std::memory_order_relaxed);
                     }
@@ -463,6 +498,10 @@ bool WasapiRelay::start(
     return impl_->start(sourceDeviceId, destinationDeviceId, config);
 }
 
+void WasapiRelay::updateControlState(const ApoControlState& state) noexcept {
+    impl_->updateControlState(state);
+}
+
 void WasapiRelay::stop() noexcept { impl_->stop(); }
 
 bool WasapiRelay::running() const noexcept {
@@ -476,6 +515,7 @@ RelayStats WasapiRelay::stats() const noexcept {
         impl_->capturedFrames.load(std::memory_order_relaxed),
         impl_->renderedFrames.load(std::memory_order_relaxed),
         impl_->bufferedFrames.load(std::memory_order_relaxed),
+        impl_->appliedControlRevision.load(std::memory_order_relaxed),
         impl_->clockCorrectionPpm.load(std::memory_order_relaxed),
     };
 }
