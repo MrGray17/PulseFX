@@ -1,7 +1,10 @@
 #ifdef _WIN32
 #include "ClockDriftController.h"
+#include "StereoSampleCodec.h"
 #include "WasapiRelay.h"
+#include <array>
 #include <cmath>
+#include <cstdint>
 #include <stdexcept>
 
 namespace {
@@ -46,12 +49,39 @@ void testClockControllerCorrectsBothDirections() {
     require(low.correctionPpm() >= -2000.1f, "negative clock correction exceeded hard bound");
 }
 
+void testPcm16DecodeCoversFullScaleAndChannelOrder() {
+    const std::array<std::int16_t, 6> input{
+        -32768, 32767,
+        0, 16384,
+        -16384, 1,
+    };
+    std::array<float, 6> output{};
+    pulsefx::windows::decodeStereoSamples(
+        input.data(), 3, pulsefx::windows::StereoSampleEncoding::Pcm16, output.data());
+    require(std::abs(output[0] + 1.0f) < 1.0e-7f, "PCM16 negative full scale decoded incorrectly");
+    require(output[1] > 0.9999f && output[1] < 1.0f, "PCM16 positive full scale decoded incorrectly");
+    require(output[2] == 0.0f, "PCM16 silence decoded incorrectly");
+    require(std::abs(output[3] - 0.5f) < 1.0e-7f, "PCM16 right channel decoded incorrectly");
+    require(std::abs(output[4] + 0.5f) < 1.0e-7f, "PCM16 left channel order changed");
+    require(output[5] > 0.0f, "PCM16 least-significant positive sample lost");
+}
+
+void testFloatDecodeIsBitPreserving() {
+    const std::array<float, 4> input{0.25f, -0.5f, 0.75f, -1.0f};
+    std::array<float, 4> output{};
+    pulsefx::windows::decodeStereoSamples(
+        input.data(), 2, pulsefx::windows::StereoSampleEncoding::Float32, output.data());
+    require(input == output, "float32 relay decode changed samples");
+}
+
 } // namespace
 
 int main() {
     testRelayStartsIdle();
     testClockControllerStaysNominalAtTarget();
     testClockControllerCorrectsBothDirections();
+    testPcm16DecodeCoversFullScaleAndChannelOrder();
+    testFloatDecodeIsBitPreserving();
     return 0;
 }
 #endif
