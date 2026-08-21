@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   AudioLines, ChevronDown, Headphones, Layers3, Moon, Power, Radio,
-  SlidersHorizontal, Sparkles, Waves, Volume2, VolumeX, CircleAlert,
+  SlidersHorizontal, Sparkles, Waves, Volume2, VolumeX, CircleAlert, Search,
 } from 'lucide-react';
 import { pulsefxApi } from './pulsefxApi.js';
 import './styles.css';
@@ -59,6 +59,13 @@ function App() {
   const [preset, setPreset] = useState('Pop');
   const [eq, setEq] = useState([...presets.Pop]);
   const [headphoneEq, setHeadphoneEq] = useState(false);
+  const [headphoneModels, setHeadphoneModels] = useState([]);
+  const [headphoneQuery, setHeadphoneQuery] = useState('');
+  const [headphoneRevision, setHeadphoneRevision] = useState('');
+  const [selectedHeadphone, setSelectedHeadphone] = useState(null);
+  const [headphoneProfileInfo, setHeadphoneProfileInfo] = useState(null);
+  const [headphoneLoading, setHeadphoneLoading] = useState(false);
+  const [headphoneError, setHeadphoneError] = useState('');
   const [outputId, setOutputId] = useState('');
   const [devices, setDevices] = useState([]);
   const [apps, setApps] = useState([]);
@@ -71,6 +78,13 @@ function App() {
   const intensity = effectAmounts[activeEffect] ?? 0;
   const curve = useMemo(() => eq.map((value) => 50 - value * 2.7), [eq]);
   const physicalDevices = devices.filter((device) => !device.pulsefx);
+  const headphoneMatches = useMemo(() => {
+    const query = headphoneQuery.trim().toLocaleLowerCase();
+    const source = query.length === 0
+      ? headphoneModels
+      : headphoneModels.filter((model) => model.name.toLocaleLowerCase().includes(query));
+    return source.slice(0, 80);
+  }, [headphoneModels, headphoneQuery]);
 
   const run = async (name, ...args) => {
     try {
@@ -102,6 +116,21 @@ function App() {
     if (next?.type === 'apps') setApps(next.apps ?? []);
   };
 
+  const loadHeadphoneCatalog = async () => {
+    if (headphoneModels.length > 0 || headphoneLoading) return;
+    setHeadphoneLoading(true);
+    setHeadphoneError('');
+    try {
+      const result = await pulsefxApi.listHeadphones();
+      setHeadphoneModels(Array.isArray(result?.models) ? result.models : []);
+      setHeadphoneRevision(typeof result?.revision === 'string' ? result.revision : '');
+    } catch (error) {
+      setHeadphoneError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setHeadphoneLoading(false);
+    }
+  };
+
   const sendEffect = async (id, on, amount) => {
     const normalized = on ? clamp(amount, 0, 100) / 100 : 0;
     if (id === 'night') {
@@ -116,12 +145,32 @@ function App() {
     await run('enabled', state.enabled);
     await run('preamp', state.preamp);
     await run('pitch', state.pitch);
-    await run('headphone_enable', state.headphoneEq);
+    // Fail open while restoring. Correction is enabled only after the selected
+    // profile has parsed and been adopted by the native host successfully.
+    await run('headphone_enable', false);
     for (const effect of effects) {
       await sendEffect(effect.id, Boolean(state.effectEnabled[effect.id]), state.effectAmounts[effect.id] ?? 0);
     }
     for (let index = 0; index < state.eq.length; index += 1) await run('eq', index, state.eq[index]);
     if (state.outputId) await run('output', state.outputId);
+
+    if (state.headphoneModelPath) {
+      try {
+        const applied = await pulsefxApi.applyHeadphoneProfile(state.headphoneModelPath);
+        if (applied?.ok) {
+          setSelectedHeadphone(applied.model ?? { path: state.headphoneModelPath, name: state.headphoneModelName || 'Selected model' });
+          setHeadphoneRevision(applied.revision ?? state.headphoneRevision ?? '');
+          setHeadphoneProfileInfo({ preampDb: applied.preampDb, filters: applied.filters });
+          if (state.headphoneEq) await run('headphone_enable', true);
+          return;
+        }
+      } catch (error) {
+        setHeadphoneError(error instanceof Error ? error.message : String(error));
+      }
+    }
+    if (state.headphoneEq && !state.headphoneModelPath) {
+      setHeadphoneError('Choose a headphone model before enabling correction.');
+    }
   };
 
   useEffect(() => {
@@ -135,6 +184,9 @@ function App() {
         preamp: clamp(saved.preamp ?? 0, -12, 9),
         pitch: clamp(saved.pitch ?? 0, -5, 5),
         headphoneEq: typeof saved.headphoneEq === 'boolean' ? saved.headphoneEq : false,
+        headphoneModelPath: typeof saved.headphoneModelPath === 'string' ? saved.headphoneModelPath : '',
+        headphoneModelName: typeof saved.headphoneModelName === 'string' ? saved.headphoneModelName : '',
+        headphoneRevision: typeof saved.headphoneRevision === 'string' ? saved.headphoneRevision : '',
         effectEnabled: { ...defaultEffectEnabled, ...(saved.effectEnabled ?? {}) },
         effectAmounts: { ...defaultEffectAmounts, ...(saved.effectAmounts ?? {}) },
         eq: Array.isArray(saved.eq) && saved.eq.length === bands.length ? saved.eq.map((value) => clamp(value, -12, 12)) : [...presets[restoredPreset]],
@@ -145,6 +197,10 @@ function App() {
       setPreamp(restored.preamp);
       setPitch(restored.pitch);
       setHeadphoneEq(restored.headphoneEq);
+      setHeadphoneRevision(restored.headphoneRevision);
+      if (restored.headphoneModelPath) {
+        setSelectedHeadphone({ path: restored.headphoneModelPath, name: restored.headphoneModelName || 'Selected model' });
+      }
       setEffectEnabled(restored.effectEnabled);
       setEffectAmounts(restored.effectAmounts);
       setEq(restored.eq);
@@ -171,10 +227,23 @@ function App() {
   useEffect(() => {
     if (!hydrated) return undefined;
     const timer = setTimeout(() => {
-      pulsefxApi.saveSettings({ enabled, preamp, pitch, headphoneEq, effectEnabled, effectAmounts, eq, preset, outputId }).catch(() => {});
+      pulsefxApi.saveSettings({
+        enabled,
+        preamp,
+        pitch,
+        headphoneEq,
+        headphoneModelPath: selectedHeadphone?.path ?? '',
+        headphoneModelName: selectedHeadphone?.name ?? '',
+        headphoneRevision,
+        effectEnabled,
+        effectAmounts,
+        eq,
+        preset,
+        outputId,
+      }).catch(() => {});
     }, 250);
     return () => clearTimeout(timer);
-  }, [hydrated, enabled, preamp, pitch, headphoneEq, effectEnabled, effectAmounts, eq, preset, outputId]);
+  }, [hydrated, enabled, preamp, pitch, headphoneEq, selectedHeadphone, headphoneRevision, effectEnabled, effectAmounts, eq, preset, outputId]);
 
   useEffect(() => {
     if (!hydrated) return undefined;
@@ -247,9 +316,37 @@ function App() {
   };
 
   const toggleHeadphoneEq = () => {
+    if (!selectedHeadphone) {
+      setHeadphoneError('Choose a headphone model before enabling correction.');
+      setActiveTab('headphones');
+      loadHeadphoneCatalog();
+      return;
+    }
     const next = !headphoneEq;
     setHeadphoneEq(next);
+    setHeadphoneError('');
     run('headphone_enable', next);
+  };
+
+  const chooseHeadphone = async (model) => {
+    if (!model?.path || headphoneLoading) return;
+    setHeadphoneLoading(true);
+    setHeadphoneError('');
+    // Keep the old profile active until the replacement has been fully parsed
+    // and atomically accepted by the native host.
+    try {
+      const applied = await pulsefxApi.applyHeadphoneProfile(model.path);
+      if (!applied?.ok) throw new Error('Headphone profile was not applied');
+      setSelectedHeadphone(applied.model ?? model);
+      setHeadphoneRevision(applied.revision ?? headphoneRevision);
+      setHeadphoneProfileInfo({ preampDb: applied.preampDb, filters: applied.filters });
+      setHeadphoneEq(true);
+      await run('headphone_enable', true);
+    } catch (error) {
+      setHeadphoneError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setHeadphoneLoading(false);
+    }
   };
 
   const changeOutput = async (deviceId) => {
@@ -290,7 +387,7 @@ function App() {
       <aside className="sidebar">
         <button className={activeTab === 'enhance' ? 'nav active' : 'nav'} onClick={() => setActiveTab('enhance')}><Sparkles size={18}/><span>Enhance</span></button>
         <button className={activeTab === 'equalizer' ? 'nav active' : 'nav'} onClick={() => setActiveTab('equalizer')}><SlidersHorizontal size={18}/><span>Equalizer</span></button>
-        <button className={activeTab === 'headphones' ? 'nav active' : 'nav'} onClick={() => setActiveTab('headphones')}><Headphones size={18}/><span>Headphones</span></button>
+        <button className={activeTab === 'headphones' ? 'nav active' : 'nav'} onClick={() => { setActiveTab('headphones'); loadHeadphoneCatalog(); }}><Headphones size={18}/><span>Headphones</span></button>
         <button className={activeTab === 'apps' ? 'nav active' : 'nav'} onClick={() => { setActiveTab('apps'); refreshApps(); }}><Radio size={18}/><span>Apps</span></button>
       </aside>
 
@@ -303,14 +400,36 @@ function App() {
             <div className="quick-controls">
               <label><span><small>PREAMP</small><strong>{preamp > 0 ? '+' : ''}{preamp.toFixed(1)} dB</strong></span><input type="range" min="-12" max="9" step="0.5" value={preamp} onChange={(event) => changePreamp(event.target.value)}/></label>
               <label><span><small>PITCH</small><strong>{pitch > 0 ? '+' : ''}{pitch.toFixed(1)} st</strong></span><input aria-label="Pitch semitones" type="range" min="-5" max="5" step="0.1" value={pitch} onChange={(event) => changePitch(event.target.value)}/></label>
-              <button className={headphoneEq ? 'headphone-toggle on' : 'headphone-toggle'} onClick={toggleHeadphoneEq}><Headphones size={17}/><span><small>HEADPHONE EQ</small><strong>{headphoneEq ? 'Enabled' : 'Off'}</strong></span><i/></button>
+              <button className={headphoneEq ? 'headphone-toggle on' : 'headphone-toggle'} onClick={toggleHeadphoneEq}><Headphones size={17}/><span><small>HEADPHONE EQ</small><strong>{headphoneEq ? selectedHeadphone?.name || 'Enabled' : 'Off'}</strong></span><i/></button>
             </div>
           </div>
         </section>}
 
         {activeTab === 'equalizer' && <section className="eq-card standalone"><div className="eq-header"><div><p className="kicker">TONE SHAPING</p><h2>31-band equalizer</h2></div><div className="preset-row">{Object.keys(presets).map((name) => <button key={name} className={preset === name ? 'preset active' : 'preset'} onClick={() => choosePreset(name)}>{name}</button>)}{preset === 'Custom' && <button className="preset active">Custom</button>}</div></div><div className="eq-viewport"><div className="curve" aria-hidden="true"><svg viewBox="0 0 930 110" preserveAspectRatio="none"><polyline points={curve.map((y, index) => `${index * 31},${y}`).join(' ')}/></svg></div><div className="eq-grid">{bands.map((band, index) => <label className="eq-band" key={band}><span className="db">{eq[index] > 0 ? '+' : ''}{eq[index]}</span><input aria-label={`${band} Hz`} type="range" min="-12" max="12" step="1" value={eq[index]} onChange={(event) => updateBand(index, event.target.value)}/><span className="frequency">{band}</span></label>)}</div></div></section>}
 
-        {activeTab === 'headphones' && <section className="utility-card"><p className="kicker">HEADPHONE CORRECTION</p><div className="utility-heading"><div><h1>Headphone EQ</h1><p>Apply the active correction profile before enhancement and spatial processing.</p></div><button className={headphoneEq ? 'large-toggle on' : 'large-toggle'} onClick={toggleHeadphoneEq}><Power size={18}/>{headphoneEq ? 'Enabled' : 'Disabled'}</button></div><div className="info-grid"><div><small>PROCESSING ORDER</small><strong>Correction → EQ → Enhancement</strong></div><div><small>ENGINE</small><strong>Parametric profile correction</strong></div><div><small>STATUS</small><strong>{headphoneEq ? 'Correction active' : 'Transparent'}</strong></div></div><p className="muted-note">Invalid or missing correction data fails open instead of muting system audio.</p></section>}
+        {activeTab === 'headphones' && <section className="utility-card headphone-card">
+          <p className="kicker">HEADPHONE CORRECTION</p>
+          <div className="utility-heading"><div><h1>Headphone EQ</h1><p>Search the pinned AutoEq recommended catalog and load the model directly into PulseFX's native parametric correction engine.</p></div><button className={headphoneEq ? 'large-toggle on' : 'large-toggle'} onClick={toggleHeadphoneEq}><Power size={18}/>{headphoneEq ? 'Enabled' : 'Disabled'}</button></div>
+
+          <div className="headphone-profile-panel">
+            <div className="headphone-current">
+              <small>ACTIVE MODEL</small>
+              <strong>{selectedHeadphone?.name || 'No headphone selected'}</strong>
+              <span>{selectedHeadphone ? `${headphoneProfileInfo?.filters ?? '—'} filters · ${Number(headphoneProfileInfo?.preampDb ?? 0).toFixed(1)} dB profile preamp` : 'Choose your exact model for correction.'}</span>
+            </div>
+            <label className="headphone-search"><Search size={17}/><input aria-label="Search headphone models" placeholder="Search 6,033 headphone models…" value={headphoneQuery} onChange={(event) => setHeadphoneQuery(event.target.value)} onFocus={loadHeadphoneCatalog}/></label>
+            {headphoneError && <div className="profile-error"><CircleAlert size={15}/><span>{headphoneError}</span></div>}
+            <div className="headphone-results" role="listbox" aria-label="Headphone models">
+              {headphoneLoading && headphoneModels.length === 0 && <div className="empty-state">Loading the pinned AutoEq catalog…</div>}
+              {!headphoneLoading && headphoneModels.length === 0 && !headphoneError && <button className="refresh-button" onClick={loadHeadphoneCatalog}>Load headphone catalog</button>}
+              {headphoneMatches.map((model) => <button key={model.path} role="option" aria-selected={selectedHeadphone?.path === model.path} className={selectedHeadphone?.path === model.path ? 'headphone-result selected' : 'headphone-result'} onClick={() => chooseHeadphone(model)} disabled={headphoneLoading}><span>{model.name}</span>{selectedHeadphone?.path === model.path && <strong>Active</strong>}</button>)}
+              {headphoneModels.length > 0 && headphoneMatches.length === 0 && <div className="empty-state">No matching headphone in the pinned recommended catalog.</div>}
+            </div>
+          </div>
+
+          <div className="info-grid"><div><small>PROCESSING ORDER</small><strong>Correction → EQ → Enhancement</strong></div><div><small>CATALOG</small><strong>{headphoneModels.length > 0 ? `${headphoneModels.length.toLocaleString()} recommended models` : '6,033 recommended models'}</strong></div><div><small>STATUS</small><strong>{headphoneEq && selectedHeadphone ? 'Correction active' : 'Transparent'}</strong></div></div>
+          <p className="muted-note">Profiles are pinned to AutoEq revision {headphoneRevision ? headphoneRevision.slice(0, 8) : '7ae0f56d'} for reproducibility. Invalid or missing correction data fails open instead of muting system audio.</p>
+        </section>}
 
         {activeTab === 'apps' && <section className="utility-card apps-card"><div className="utility-heading"><div><p className="kicker">APP VOLUME CONTROLLER</p><h1>Applications</h1><p>Control sessions currently playing through PulseFX Output.</p></div><button className="refresh-button" onClick={refreshApps}>Refresh</button></div><div className="app-list">{apps.length === 0 && <div className="empty-state">No active audio sessions are currently routed through PulseFX.</div>}{apps.map((app) => <div className="app-row" key={app.pid}><div className="app-identity"><div className="app-icon"><AudioLines size={16}/></div><div><strong>{app.name}</strong><span>PID {app.pid}</span></div></div><input aria-label={`${app.name} volume`} type="range" min="0" max="1" step="0.01" value={app.volume} onChange={(event) => changeAppVolume(app.pid, event.target.value)}/><span className="app-volume">{Math.round(app.volume * 100)}%</span><button className={app.muted ? 'mute-button muted' : 'mute-button'} onClick={() => toggleAppMute(app.pid, !app.muted)}>{app.muted ? <VolumeX size={17}/> : <Volume2 size={17}/>}</button></div>)}</div></section>}
 
