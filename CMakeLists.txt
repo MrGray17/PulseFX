@@ -90,7 +90,7 @@ if(PULSEFX_BUILD_WASAPI_RELAY)
   target_compile_definitions(pulsefx_audio_host PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 
   add_executable(pulsefx_device_setup windows/driver/PulseFxDeviceSetup.cpp)
-  target_link_libraries(pulsefx_device_setup PRIVATE setupapi)
+  target_link_libraries(pulsefx_device_setup PRIVATE setupapi cfgmgr32)
   target_compile_definitions(pulsefx_device_setup PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
 endif()
 
