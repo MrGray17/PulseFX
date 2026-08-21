@@ -4,11 +4,13 @@ on:
   push:
     paths:
       - 'engine/**'
+      - 'windows/**'
       - 'CMakeLists.txt'
       - '.github/workflows/dsp-ci.yml'
   pull_request:
     paths:
       - 'engine/**'
+      - 'windows/**'
       - 'CMakeLists.txt'
       - '.github/workflows/dsp-ci.yml'
 
@@ -16,12 +18,16 @@ jobs:
   test:
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            relay: OFF
+          - os: windows-latest
+            relay: ON
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DPULSEFX_BUILD_WASAPI_RELAY=${{ matrix.relay }}
       - name: Build
         run: cmake --build build --config Debug
       - name: Test
