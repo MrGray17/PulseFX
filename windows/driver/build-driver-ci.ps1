@@ -86,16 +86,31 @@ $nuget = Get-Command nuget.exe -ErrorAction SilentlyContinue
 if (-not $nuget) { throw 'nuget.exe is required for the WDK NuGet restore.' }
 Invoke-Checked $nuget.Source @('restore', (Join-Path $RepoRoot 'packages.config'), '-PackagesDirectory', (Join-Path $RepoRoot 'packages')) $RepoRoot
 
-$buildScript = Join-Path $RepoRoot 'Build-Samples.ps1'
-if (-not (Test-Path $buildScript)) { throw "Build-Samples.ps1 was not found at $buildScript" }
-
-Push-Location $RepoRoot
-try {
-    & $buildScript -Samples 'audio.simpleaudiosample' -Configurations $Configuration -Platforms $Platform -RunMode NuGet -ThrottleLimit 2
-    if ($LASTEXITCODE -ne 0) { throw "Build-Samples.ps1 exited with code $LASTEXITCODE" }
-} finally {
-    Pop-Location
+# Do not depend on the Windows-driver-samples Build-Samples.ps1 environment
+# discovery wrapper here. Hosted VS/WDK runner metadata has changed across
+# versions and the wrapper can fail before MSBuild ever sees the sample. Build
+# the pinned sample solution directly so this gate validates our actual driver.
+$vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+$msbuild = $null
+if (Test-Path $vswhere) {
+    $msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
 }
+if (-not $msbuild) {
+    $candidate = Get-Command msbuild.exe -ErrorAction SilentlyContinue
+    if ($candidate) { $msbuild = $candidate.Source }
+}
+if (-not $msbuild) { throw 'MSBuild was not found on the Windows CI runner.' }
+
+$solution = Join-Path $SampleRoot 'SimpleAudioSample.sln'
+if (-not (Test-Path $solution)) { throw "SimpleAudioSample.sln was not found at $solution" }
+Invoke-Checked $msbuild @(
+    $solution,
+    '/m',
+    '/t:Build',
+    "/p:Configuration=$Configuration",
+    "/p:Platform=$Platform",
+    '/p:RunCodeAnalysis=true'
+) $SampleRoot
 
 $driver = Get-ChildItem -LiteralPath $SampleRoot -Recurse -File -Filter 'SimpleAudioSample.sys' |
     Where-Object { $_.FullName -match '[\\/]package[\\/]' } |
