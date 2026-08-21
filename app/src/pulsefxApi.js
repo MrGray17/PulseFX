@@ -14,6 +14,14 @@ export const pulsefxApi = {
     if (!desktop) return false;
     return desktop.saveSettings(settings);
   },
+  async listHeadphones() {
+    if (!desktop) return { revision: '', models: [] };
+    return desktop.listHeadphones();
+  },
+  async applyHeadphoneProfile(modelPath) {
+    if (!desktop) throw new Error('Headphone profiles are available only in the desktop app.');
+    return desktop.applyHeadphoneProfile(modelPath);
+  },
   onEvent(callback) {
     return desktop ? desktop.onEvent(callback) : () => {};
   },
