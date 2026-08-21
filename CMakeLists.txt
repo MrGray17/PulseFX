@@ -13,8 +13,11 @@ add_library(pulsefx_dsp STATIC
     engine/src/Equalizer.cpp
     engine/src/HeadphoneCorrection.cpp
     engine/src/BassEnhancer.cpp
+    engine/src/FidelityEnhancer.cpp
     engine/src/ClarityEnhancer.cpp
     engine/src/Dynamics.cpp
+    engine/src/SpatialSurround.cpp
+    engine/src/Ambience.cpp
     engine/src/StereoEnhancer.cpp
     engine/src/Limiter.cpp
     engine/src/TruePeakDetector.cpp
