@@ -6,6 +6,9 @@ namespace pulsefx {
 namespace {
 float dbToLinear(float db) noexcept { return std::pow(10.0f, db / 20.0f); }
 float linearToDb(float x) noexcept { return 20.0f * std::log10(std::max(x, 1.0e-9f)); }
+float timeCoeff(float sampleRate, float ms) noexcept {
+    return std::exp(-1.0f / (0.001f * ms * sampleRate));
+}
 
 float softKneeGainDb(float inputDb, float thresholdDb, float ratio, float kneeDb) noexcept {
     if (ratio <= 1.0f) return 0.0f;
@@ -21,14 +24,26 @@ float softKneeGainDb(float inputDb, float thresholdDb, float ratio, float kneeDb
 void Dynamics::prepare(float sampleRate) noexcept {
     sampleRate_ = std::clamp(sampleRate, 8000.0f, 384000.0f);
     amount_.prepare(sampleRate_, 45.0f, 0.0f);
+    updateTiming();
     reset();
+}
+
+void Dynamics::updateTiming() noexcept {
+    detectorAttackCoeff_ = timeCoeff(sampleRate_, nightMode_ ? 8.0f : 14.0f);
+    detectorReleaseCoeff_ = timeCoeff(sampleRate_, nightMode_ ? 220.0f : 150.0f);
+    gainAttackCoeff_ = timeCoeff(sampleRate_, 5.0f);
+    gainReleaseCoeff_ = timeCoeff(sampleRate_, nightMode_ ? 180.0f : 120.0f);
 }
 
 void Dynamics::setAmount(float amount) noexcept {
     amount_.setTarget(std::clamp(amount, 0.0f, 1.0f));
 }
 
-void Dynamics::setNightMode(bool enabled) noexcept { nightMode_ = enabled; }
+void Dynamics::setNightMode(bool enabled) noexcept {
+    if (nightMode_ == enabled) return;
+    nightMode_ = enabled;
+    updateTiming();
+}
 
 void Dynamics::reset() noexcept {
     detector_ = 0.0f;
@@ -41,12 +56,8 @@ void Dynamics::processStereo(float& left, float& right) noexcept {
     if (amount <= 1.0e-5f && !nightMode_) return;
 
     const float peak = std::max(std::abs(left), std::abs(right));
-    const float attackMs = nightMode_ ? 8.0f : 14.0f;
-    const float releaseMs = nightMode_ ? 220.0f : 150.0f;
-    const float attackCoeff = std::exp(-1.0f / (0.001f * attackMs * sampleRate_));
-    const float releaseCoeff = std::exp(-1.0f / (0.001f * releaseMs * sampleRate_));
-    const float coeff = peak > detector_ ? attackCoeff : releaseCoeff;
-    detector_ = coeff * detector_ + (1.0f - coeff) * peak;
+    const float detectorCoeff = peak > detector_ ? detectorAttackCoeff_ : detectorReleaseCoeff_;
+    detector_ = detectorCoeff * detector_ + (1.0f - detectorCoeff) * peak;
 
     const float detectorDb = linearToDb(detector_);
     const float thresholdDb = nightMode_ ? -24.0f : (-10.0f - 8.0f * amount);
@@ -56,11 +67,7 @@ void Dynamics::processStereo(float& left, float& right) noexcept {
     const float makeupDb = nightMode_ ? 3.0f : 1.3f * amount;
     const float targetGain = dbToLinear(desiredReductionDb + makeupDb);
 
-    const float gainAttackMs = 5.0f;
-    const float gainReleaseMs = nightMode_ ? 180.0f : 120.0f;
-    const float gainAttack = std::exp(-1.0f / (0.001f * gainAttackMs * sampleRate_));
-    const float gainRelease = std::exp(-1.0f / (0.001f * gainReleaseMs * sampleRate_));
-    const float gainCoeff = targetGain < gain_ ? gainAttack : gainRelease;
+    const float gainCoeff = targetGain < gain_ ? gainAttackCoeff_ : gainReleaseCoeff_;
     gain_ = gainCoeff * gain_ + (1.0f - gainCoeff) * targetGain;
 
     left *= gain_;
