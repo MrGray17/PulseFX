@@ -2,6 +2,7 @@
 
 #include "AudioDeviceCatalog.h"
 #include "AudioSessionMixer.h"
+#include "HeadphoneProfileCommand.h"
 #include "HostProtocol.h"
 #include "../relay/WasapiRelay.h"
 #include <Windows.h>
@@ -94,6 +95,7 @@ public:
         if (command.name == "enabled") return handleBoolControlLocked(command, "enabled");
         if (command.name == "night") return handleBoolControlLocked(command, "night");
         if (command.name == "headphone_enable") return handleBoolControlLocked(command, "headphone_enable");
+        if (command.name == "headphone_profile") return handleHeadphoneProfileLocked(command);
         if (command.name == "preamp" || command.name == "bass" || command.name == "clarity" ||
             command.name == "fidelity" || command.name == "spatial" || command.name == "surround" ||
             command.name == "ambience" || command.name == "dynamics" || command.name == "pitch") {
@@ -223,6 +225,17 @@ private:
         control_.eqDb[band] = std::clamp(gain, -12.0f, 12.0f);
         pushControlLocked();
         return ackJson("eq");
+    }
+
+    std::string handleHeadphoneProfileLocked(const HostCommand& command) {
+        // Parse into a copy first. Malformed remote/profile data can never leave
+        // half of a new filter bank active on the realtime thread.
+        ApoControlState next = control_;
+        std::string error;
+        if (!applyHeadphoneProfileArgs(command.args, next, error)) return errorJson(error);
+        control_ = next;
+        pushControlLocked();
+        return ackJson("headphone_profile");
     }
 
     std::string handleAppVolumeLocked(const HostCommand& command) {
