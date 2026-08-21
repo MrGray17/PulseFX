@@ -274,7 +274,7 @@ test('every enhancement mode, preset and EQ band remains wired', async ({ page }
   const bands = ['20','25','31','40','50','63','80','100','125','160','200','250','315','400','500','630','800','1k','1.25k','1.6k','2k','2.5k','3.15k','4k','5k','6.3k','8k','10k','12.5k','16k','20k'];
   for (let index = 0; index < bands.length; index += 1) {
     const value = index % 2 === 0 ? 1 : -1;
-    await setRange(page.getByLabel(`${bands[index]} Hz`), value);
+    await setRange(page.getByRole('slider', { name: `${bands[index]} Hz`, exact: true }), value);
   }
   const eqCalls = (await getCalls(page, 'command')).filter((call) => call.name === 'eq');
   for (let index = 0; index < bands.length; index += 1) {
@@ -296,11 +296,16 @@ test('player edge cases, output exclusion and health errors are handled', async 
   expect(values).toContain('speakers-1');
   expect(values).toContain('headphones-1');
 
-  // Enabling headphone correction without a selected model must redirect the
-  // user to the model picker instead of enabling an empty correction bank.
+  // Enabling headphone correction without a selected model must redirect to the
+  // model picker and must never activate an empty correction bank.
+  const trueHeadphoneEnablesBefore = (await getCalls(page, 'command'))
+    .filter((call) => call.name === 'headphone_enable' && call.args[0] === true).length;
   await page.locator('.headphone-toggle').click();
   await expect(page.getByRole('heading', { name: 'Headphone EQ' })).toBeVisible();
-  await expect(page.getByText('Choose a headphone model before enabling correction.')).toBeVisible();
+  await expect(page.getByRole('option', { name: 'Acme Studio One' })).toBeVisible();
+  const trueHeadphoneEnablesAfter = (await getCalls(page, 'command'))
+    .filter((call) => call.name === 'headphone_enable' && call.args[0] === true).length;
+  expect(trueHeadphoneEnablesAfter).toBe(trueHeadphoneEnablesBefore);
 
   await page.getByRole('button', { name: 'Player' }).click();
   await page.getByRole('button', { name: /Add audio/ }).click();
