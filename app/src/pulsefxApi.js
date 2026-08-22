@@ -30,6 +30,22 @@ export const pulsefxApi = {
     if (!desktop) return [];
     return desktop.searchRadio(query);
   },
+  async browseRadio(mode, countryCode = '') {
+    if (!desktop) return [];
+    return desktop.browseRadio(mode, countryCode);
+  },
+  async listRadioCountries() {
+    if (!desktop) return [];
+    return desktop.listRadioCountries();
+  },
+  async getLocaleCountryCode() {
+    if (!desktop) return '';
+    return desktop.getLocaleCountryCode();
+  },
+  async openDefaultApps() {
+    if (!desktop) return false;
+    return desktop.openDefaultApps();
+  },
   async recordRadioClick(stationuuid) {
     if (!desktop) return false;
     return desktop.recordRadioClick(stationuuid);
