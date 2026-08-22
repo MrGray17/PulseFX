@@ -268,11 +268,13 @@ function AdaptiveTools() {
     setProbeBusy(true);
     const personalized = { ...safeCalibration(calibrationDraft), enabled: true };
     const audition = variant === 'personalized' ? personalized : { ...personalized, enabled: false };
-    const restore = safeCalibration(calibration);
     try {
       await applyCalibration(audition);
       return await playSpatialProbe();
     } finally {
+      const current = stateRef.current;
+      const currentHeadphone = headphoneRef.current;
+      const restore = safeCalibration(current.calibrations[currentHeadphone.key] ?? DEFAULT_CALIBRATION);
       await applyCalibration(restore);
       setProbeBusy(false);
     }
@@ -340,7 +342,7 @@ function AdaptiveTools() {
               ['ITD scale','itdScale',0.75,1.25,0.01],['Near-ear energy','ipsilateralGain',0.65,1.20,0.01],['Far-ear / head shadow','contralateralGain',0.45,1.15,0.01],['Spatial trim dB','wetTrimDb',-6,1.5,0.1],
             ].map(([label,key,min,max,step]) => <label key={key}><span>{label}<strong>{Number(calibrationDraft[key]).toFixed(key === 'wetTrimDb' ? 1 : 2)}</strong></span><input aria-label={label} type="range" min={min} max={max} step={step} value={calibrationDraft[key]} onChange={(event) => setCalibrationDraft((current) => ({ ...current, [key]: Number(event.target.value) }))}/></label>)}
           </div>
-          <div className="calibration-actions"><button onClick={() => playVariant('default')} disabled={probeBusy}>Play A · Default</button><button onClick={() => playVariant('personalized')} disabled={probeBusy}>Play B · Personalized</button><button className="primary" onClick={saveCalibration}>Save personalized</button><button onClick={disableCalibration}>Use default</button></div>
+          <div className="calibration-actions"><button onClick={() => playVariant('default')} disabled={probeBusy}>Play A · Default</button><button onClick={() => playVariant('personalized')} disabled={probeBusy}>Play B · Personalized</button><button className="primary" onClick={saveCalibration} disabled={probeBusy}>Save personalized</button><button onClick={disableCalibration} disabled={probeBusy}>Use default</button></div>
           <div className="abx-card"><div><strong>Blind X check</strong><span>{abx.total ? `${abx.correct}/${abx.total} correct` : 'Compare without knowing which profile X uses.'}</span></div><button onClick={newAbxTrial} disabled={probeBusy}>New trial</button><button disabled={probeBusy} onClick={playAbx}>Play X</button><button disabled={!abx.played || probeBusy} onClick={() => guessAbx('default')}>X = A</button><button disabled={!abx.played || probeBusy} onClick={() => guessAbx('personalized')}>X = B</button></div>
         </div>}
 
