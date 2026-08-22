@@ -143,7 +143,7 @@ function AdaptiveTools() {
   const [headphone, setHeadphone] = useState({ key: 'default-output', name: 'Default / unknown headphones' });
   const [calibrationDraft, setCalibrationDraft] = useState(DEFAULT_CALIBRATION);
   const [probeBusy, setProbeBusy] = useState(false);
-  const [abx, setAbx] = useState({ total: 0, correct: 0, hidden: 'personalized' });
+  const [abx, setAbx] = useState({ total: 0, correct: 0, hidden: 'personalized', played: false });
   const stateRef = useRef(state);
   const headphoneRef = useRef(headphone);
 
@@ -264,21 +264,37 @@ function AdaptiveTools() {
   };
 
   const playVariant = async (variant) => {
-    if (probeBusy) return;
+    if (probeBusy) return false;
     setProbeBusy(true);
     const personalized = { ...safeCalibration(calibrationDraft), enabled: true };
-    await applyCalibration(variant === 'personalized' ? personalized : { ...personalized, enabled: false });
-    try { await playSpatialProbe(); } finally { setProbeBusy(false); }
+    const audition = variant === 'personalized' ? personalized : { ...personalized, enabled: false };
+    const restore = safeCalibration(calibration);
+    try {
+      await applyCalibration(audition);
+      return await playSpatialProbe();
+    } finally {
+      await applyCalibration(restore);
+      setProbeBusy(false);
+    }
   };
 
-  const newAbxTrial = () => setAbx((current) => ({ ...current, hidden: Math.random() < 0.5 ? 'default' : 'personalized' }));
-  const guessAbx = async (guess) => {
-    setAbx((current) => ({
-      total: current.total + 1,
-      correct: current.correct + (guess === current.hidden ? 1 : 0),
-      hidden: Math.random() < 0.5 ? 'default' : 'personalized',
-    }));
-    await applyCalibration({ ...safeCalibration(calibrationDraft), enabled: true });
+  const newAbxTrial = () => setAbx((current) => ({ ...current, hidden: Math.random() < 0.5 ? 'default' : 'personalized', played: false }));
+  const playAbx = async () => {
+    if (probeBusy) return;
+    const hidden = abx.hidden;
+    await playVariant(hidden);
+    setAbx((current) => current.hidden === hidden ? { ...current, played: true } : current);
+  };
+  const guessAbx = (guess) => {
+    setAbx((current) => {
+      if (!current.played) return current;
+      return {
+        total: current.total + 1,
+        correct: current.correct + (guess === current.hidden ? 1 : 0),
+        hidden: Math.random() < 0.5 ? 'default' : 'personalized',
+        played: false,
+      };
+    });
   };
 
   const ruleFor = (app) => state.rules.find((rule) => rule.processKey === normalizeProcessKey(app.processName || app.name));
@@ -324,7 +340,7 @@ function AdaptiveTools() {
             ].map(([label,key,min,max,step]) => <label key={key}><span>{label}<strong>{Number(calibrationDraft[key]).toFixed(key === 'wetTrimDb' ? 1 : 2)}</strong></span><input aria-label={label} type="range" min={min} max={max} step={step} value={calibrationDraft[key]} onChange={(event) => setCalibrationDraft((current) => ({ ...current, [key]: Number(event.target.value) }))}/></label>)}
           </div>
           <div className="calibration-actions"><button onClick={() => playVariant('default')} disabled={probeBusy}>Play A · Default</button><button onClick={() => playVariant('personalized')} disabled={probeBusy}>Play B · Personalized</button><button className="primary" onClick={saveCalibration}>Save personalized</button><button onClick={disableCalibration}>Use default</button></div>
-          <div className="abx-card"><div><strong>Blind X check</strong><span>{abx.total ? `${abx.correct}/${abx.total} correct` : 'Compare without knowing which profile X uses.'}</span></div><button onClick={newAbxTrial}>New trial</button><button disabled={probeBusy} onClick={() => playVariant(abx.hidden)}>Play X</button><button onClick={() => guessAbx('default')}>X = A</button><button onClick={() => guessAbx('personalized')}>X = B</button></div>
+          <div className="abx-card"><div><strong>Blind X check</strong><span>{abx.total ? `${abx.correct}/${abx.total} correct` : 'Compare without knowing which profile X uses.'}</span></div><button onClick={newAbxTrial} disabled={probeBusy}>New trial</button><button disabled={probeBusy} onClick={playAbx}>Play X</button><button disabled={!abx.played || probeBusy} onClick={() => guessAbx('default')}>X = A</button><button disabled={!abx.played || probeBusy} onClick={() => guessAbx('personalized')}>X = B</button></div>
         </div>}
 
         {tab === 'diagnostics' && <div className="adaptive-body">
