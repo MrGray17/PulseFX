@@ -32,18 +32,19 @@ export const pulsefxApi = {
   },
   async browseRadio(mode, countryCode = '') {
     if (!desktop) return [];
-    return desktop.browseRadio(mode, countryCode);
+    if (typeof desktop.browseRadio === 'function') return desktop.browseRadio(mode, countryCode);
+    return desktop.searchRadio('');
   },
   async listRadioCountries() {
-    if (!desktop) return [];
+    if (!desktop || typeof desktop.listRadioCountries !== 'function') return [];
     return desktop.listRadioCountries();
   },
   async getLocaleCountryCode() {
-    if (!desktop) return '';
+    if (!desktop || typeof desktop.getLocaleCountryCode !== 'function') return '';
     return desktop.getLocaleCountryCode();
   },
   async openDefaultApps() {
-    if (!desktop) return false;
+    if (!desktop || typeof desktop.openDefaultApps !== 'function') return false;
     return desktop.openDefaultApps();
   },
   async recordRadioClick(stationuuid) {
