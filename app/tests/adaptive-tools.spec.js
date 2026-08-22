@@ -88,7 +88,28 @@ test('Adaptive Tools maps real audio apps to native scenes and policy controls',
 test('Calibration is keyed to the selected headphone and auditions always restore saved state', async ({ page }) => {
   await installAdaptiveMock(page);
   await page.addInitScript(() => {
-    Object.defineProperty(window, 'AudioContext', { configurable: true, value: undefined });
+    class FakeAudioContext {
+      constructor() {
+        this.sampleRate = 8000;
+        this.destination = {};
+      }
+      async resume() {}
+      createBuffer(channels, frames) {
+        const data = Array.from({ length: channels }, () => new Float32Array(frames));
+        return { getChannelData: (channel) => data[channel] };
+      }
+      createBufferSource() {
+        const source = {
+          buffer: null,
+          onended: null,
+          connect() {},
+          start() { setTimeout(() => source.onended?.(), 0); },
+        };
+        return source;
+      }
+      async close() {}
+    }
+    Object.defineProperty(window, 'AudioContext', { configurable: true, value: FakeAudioContext });
   });
   await page.goto('/');
   await page.getByRole('button', { name: 'Open Adaptive Tools' }).click();
