@@ -16,6 +16,9 @@ float safePrevious(float value, float neutral) noexcept {
 void Processor::prepare(float sampleRate) noexcept {
     const ProcessorParameters desired = parameters_;
     sampleRate_ = std::clamp(finiteOr(sampleRate, 48000.0f), 8000.0f, 384000.0f);
+    headroomAttackCoeff_ = std::exp(-1.0f / (0.35f * sampleRate_));
+    headroomReleaseCoeff_ = std::exp(-1.0f / (2.5f * sampleRate_));
+    headroomStress_ = 0.0f;
     preampGain_.prepare(sampleRate_, 30.0f, 1.0f);
     equalizer_.prepare(sampleRate_);
     headphoneCorrection_.prepare(sampleRate_);
@@ -84,6 +87,14 @@ void Processor::setParameters(const ProcessorParameters& parameters) noexcept {
 
     parameters_ = next;
 
+    // The headroom governor belongs only to Signature. Reset its memory when
+    // entering/leaving adaptive mode or when processing is explicitly bypassed
+    // so a later re-enable cannot inherit stale stress from an old signal.
+    if (previous.adaptiveHeadroom != next.adaptiveHeadroom ||
+        (!previous.bypass && next.bypass)) {
+        headroomStress_ = 0.0f;
+    }
+
     // Control snapshots arrive at audio packet boundaries. Avoid touching DSP
     // modules whose effective parameter did not change: several modules rebuild
     // biquad targets and therefore perform trig/pow work in their setters.
@@ -117,6 +128,38 @@ void Processor::reset() noexcept {
     ambience_.reset();
     stereo_.reset();
     limiter_.reset();
+    headroomStress_ = 0.0f;
+}
+
+float Processor::headroomEnhancementBlend() const noexcept {
+    if (!parameters_.adaptiveHeadroom) return 1.0f;
+    const float stress = std::clamp(
+        std::isfinite(headroomStress_) ? headroomStress_ : 0.0f,
+        0.0f,
+        1.0f);
+    // Never collapse Signature into dry sound. Even under prolonged limiting,
+    // keep 38% of the enrichment field while correction/EQ remain untouched.
+    return std::clamp(1.0f - 0.62f * stress, 0.38f, 1.0f);
+}
+
+void Processor::observeLimiterStress(float gainReductionDb) noexcept {
+    if (!parameters_.adaptiveHeadroom) {
+        headroomStress_ = 0.0f;
+        return;
+    }
+
+    const float reduction = std::clamp(
+        std::isfinite(gainReductionDb) ? gainReductionDb : 0.0f,
+        0.0f,
+        12.0f);
+    // Ignore tiny true-peak catches. Continuous reduction above roughly 0.75 dB
+    // is treated as evidence that optional enhancement is spending too much
+    // headroom; 5 dB or more maps to full stress.
+    const float target = std::clamp((reduction - 0.75f) / 4.25f, 0.0f, 1.0f);
+    const float coeff = target > headroomStress_ ? headroomAttackCoeff_ : headroomReleaseCoeff_;
+    headroomStress_ = coeff * headroomStress_ + (1.0f - coeff) * target;
+    if (!std::isfinite(headroomStress_)) headroomStress_ = 0.0f;
+    headroomStress_ = std::clamp(headroomStress_, 0.0f, 1.0f);
 }
 
 std::size_t Processor::latencySamples() const noexcept {
@@ -125,6 +168,11 @@ std::size_t Processor::latencySamples() const noexcept {
 
 void Processor::processInterleaved(float* samples, std::size_t frames, std::size_t channels) noexcept {
     if (!samples || frames == 0 || channels < 2 || parameters_.bypass) return;
+
+    // The governor changes slowly and is sampled once per host block. This keeps
+    // enrichment weighting constant inside a packet while the limiter updates
+    // the stress envelope sample-by-sample for the next packet.
+    const float enrichmentBlend = headroomEnhancementBlend();
 
     // Tone/dynamics stage. Pitch is block-based, so the chain is deliberately
     // split around it rather than allocating or buffering inside a per-sample
@@ -137,10 +185,22 @@ void Processor::processInterleaved(float* samples, std::size_t frames, std::size
         float right = std::isfinite(rightOut) ? rightOut * gain : 0.0f;
         equalizer_.processStereo(left, right);
         headphoneCorrection_.processStereo(left, right);
+
+        // Correction and user tone shaping define the protected baseline.
+        // Signature enrichment is allowed to retreat toward it under sustained
+        // limiter pressure, but the baseline itself is never dynamically EQ'd.
+        const float baselineLeft = left;
+        const float baselineRight = right;
         bass_.processStereo(left, right);
         virtualBass_.processStereo(left, right);
         fidelity_.processStereo(left, right);
         clarity_.processStereo(left, right);
+        left = baselineLeft + (left - baselineLeft) * enrichmentBlend;
+        right = baselineRight + (right - baselineRight) * enrichmentBlend;
+
+        // Keep dynamics outside the enrichment blend: compression can reduce
+        // peak pressure and should not be weakened precisely when headroom is
+        // scarce.
         dynamics_.processStereo(left, right);
         leftOut = left;
         rightOut = right;
@@ -157,10 +217,15 @@ void Processor::processInterleaved(float* samples, std::size_t frames, std::size
         float& rightOut = samples[frame * channels + 1];
         float left = std::isfinite(leftOut) ? leftOut : 0.0f;
         float right = std::isfinite(rightOut) ? rightOut : 0.0f;
+        const float spatialBaselineLeft = left;
+        const float spatialBaselineRight = right;
         spatialSurround_.processStereo(left, right);
         ambience_.processStereo(left, right);
         stereo_.processStereo(left, right);
+        left = spatialBaselineLeft + (left - spatialBaselineLeft) * enrichmentBlend;
+        right = spatialBaselineRight + (right - spatialBaselineRight) * enrichmentBlend;
         limiter_.processStereo(left, right);
+        observeLimiterStress(limiter_.gainReductionDb());
         leftOut = left;
         rightOut = right;
     }

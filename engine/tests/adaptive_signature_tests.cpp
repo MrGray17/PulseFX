@@ -1,6 +1,7 @@
 #include "pulsefx/AdaptiveSignature.h"
 #include "pulsefx/SignatureControls.h"
 #include "pulsefx/SignatureDeviceAnalysis.h"
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <limits>
@@ -95,6 +96,86 @@ void testHeadphoneEvidence() {
     assert(std::isfinite(hostileInputs.harshnessRisk));
     assert(std::isfinite(hostileInputs.endpointVolume));
     assert(hostileInputs.endpointVolume == 0.5f);
+}
+
+void processSineBlocks(Processor& processor, float amplitude, int blocks) {
+    constexpr std::size_t kFrames = 128;
+    constexpr float kSampleRate = 8000.0f;
+    constexpr float kFrequency = 997.0f;
+    constexpr float kTwoPi = 6.2831853071795864769f;
+    std::array<float, kFrames * 2> samples{};
+    float phase = 0.0f;
+    const float increment = kTwoPi * kFrequency / kSampleRate;
+
+    for (int block = 0; block < blocks; ++block) {
+        for (std::size_t frame = 0; frame < kFrames; ++frame) {
+            const float sample = amplitude * std::sin(phase);
+            phase += increment;
+            if (phase >= kTwoPi) phase -= kTwoPi;
+            samples[frame * 2] = sample;
+            samples[frame * 2 + 1] = sample;
+        }
+        processor.processInterleaved(samples.data(), kFrames, 2);
+        for (float sample : samples) assert(std::isfinite(sample));
+    }
+}
+
+void testSignatureHeadroomGovernor() {
+    ProcessorParameters adaptive{};
+    adaptive.adaptiveHeadroom = true;
+    adaptive.bass = 0.35f;
+    adaptive.fidelity = 0.35f;
+    adaptive.clarity = 0.25f;
+    adaptive.surround = 0.40f;
+
+    Processor processor;
+    processor.setParameters(adaptive);
+    processor.prepare(8000.0f);
+    assert(processor.parameters().adaptiveHeadroom);
+    assert(processor.headroomStress() == 0.0f);
+    assert(std::abs(processor.headroomEnhancementBlend() - 1.0f) < 1.0e-6f);
+
+    // A single short over-level block is a transient catch, not evidence that
+    // Signature should retune itself.
+    processSineBlocks(processor, 2.0f, 1);
+    assert(processor.headroomStress() < 0.08f);
+    const float transientBlend = processor.headroomEnhancementBlend();
+    assert(transientBlend > 0.94f);
+
+    // Roughly 1.3 seconds of sustained overload should push the slow governor
+    // decisively into protection without ever collapsing enhancement to zero.
+    processSineBlocks(processor, 2.0f, 80);
+    const float stressed = processor.headroomStress();
+    const float stressedBlend = processor.headroomEnhancementBlend();
+    assert(stressed > 0.70f);
+    assert(stressedBlend < 0.60f);
+    assert(stressedBlend >= 0.38f);
+
+    // Recovery is intentionally slow to avoid audible pumping. Four seconds of
+    // quiet material must recover substantially, but monotonically rather than
+    // snapping the enhancement field back on.
+    processSineBlocks(processor, 0.01f, 250);
+    const float recovered = processor.headroomStress();
+    assert(recovered < stressed);
+    assert(recovered < 0.30f);
+    assert(processor.headroomEnhancementBlend() > stressedBlend);
+
+    // Bypass clears stress so toggling PulseFX off/on cannot resurrect stale
+    // protection from an earlier loud track.
+    ProcessorParameters bypassed = adaptive;
+    bypassed.bypass = true;
+    processor.setParameters(bypassed);
+    assert(processor.headroomStress() == 0.0f);
+
+    // Manual mode never engages the governor, even when the limiter is working.
+    Processor manual;
+    ProcessorParameters manualParameters = adaptive;
+    manualParameters.adaptiveHeadroom = false;
+    manual.setParameters(manualParameters);
+    manual.prepare(8000.0f);
+    processSineBlocks(manual, 2.0f, 100);
+    assert(manual.headroomStress() == 0.0f);
+    assert(std::abs(manual.headroomEnhancementBlend() - 1.0f) < 1.0e-6f);
 }
 
 } // namespace
@@ -217,12 +298,14 @@ int main() {
     assert(compiled.processor.dynamics == weakPlan.dynamics);
     assert(compiled.processor.space == 0.0f);
     assert(!compiled.processor.nightMode);
+    assert(compiled.processor.adaptiveHeadroom);
     assert(compiled.spatial.itdScale == weakPlan.spatial.itdScale);
     assert(compiled.spatial.ipsilateralGain == weakPlan.spatial.ipsilateralGain);
     assert(compiled.spatial.contralateralGain == weakPlan.spatial.contralateralGain);
     assert(compiled.spatial.wetTrimDb == weakPlan.spatial.wetTrimDb);
 
     testHeadphoneEvidence();
+    testSignatureHeadroomGovernor();
 
     // Exhaust the edge cube for every policy input so future formula changes
     // cannot accidentally escape bounds at combinations not covered above.

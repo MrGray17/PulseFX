@@ -30,6 +30,7 @@ struct ProcessorParameters {
     float dynamics{0.0f};
     float pitchSemitones{0.0f};
     bool nightMode{false};
+    bool adaptiveHeadroom{false}; // Signature-only enrichment backoff under sustained limiting
 };
 
 class Processor {
@@ -47,12 +48,19 @@ public:
     const VirtualBassEnhancer& virtualBassEnhancer() const noexcept { return virtualBass_; }
     Limiter& limiter() noexcept { return limiter_; }
     const Limiter& limiter() const noexcept { return limiter_; }
+    float headroomStress() const noexcept { return headroomStress_; }
+    float headroomEnhancementBlend() const noexcept;
     std::size_t latencySamples() const noexcept;
     void processInterleaved(float* samples, std::size_t frames, std::size_t channels) noexcept;
 
 private:
+    void observeLimiterStress(float gainReductionDb) noexcept;
+
     ProcessorParameters parameters_{};
     float sampleRate_{48000.0f};
+    float headroomStress_{0.0f};
+    float headroomAttackCoeff_{0.0f};
+    float headroomReleaseCoeff_{0.0f};
     SmoothedValue preampGain_{};
     Equalizer equalizer_{};
     HeadphoneCorrection headphoneCorrection_{};

@@ -31,6 +31,9 @@ inline CompiledSignatureControls compileSignatureControls(
     compiled.processor.ambience = plan.ambience;
     compiled.processor.dynamics = plan.dynamics;
     compiled.processor.nightMode = false;
+    // Signature is the only mode allowed to let the limiter feed a slow
+    // enrichment governor. Manual remains exactly user-directed.
+    compiled.processor.adaptiveHeadroom = true;
     compiled.spatial = plan.spatial;
     return compiled;
 }
