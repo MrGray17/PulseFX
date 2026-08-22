@@ -1,4 +1,5 @@
 #include "pulsefx/AdaptiveSignature.h"
+#include "pulsefx/SignatureControls.h"
 #include <cassert>
 #include <cmath>
 #include <limits>
@@ -136,6 +137,34 @@ int main() {
     hostile.endpointVolume = std::numeric_limits<float>::quiet_NaN();
     hostile.limiterStress = std::numeric_limits<float>::infinity();
     assertBounds(makeAdaptiveSignature(hostile));
+
+    // Signature compiles onto the existing manual ProcessorParameters while
+    // preserving lifecycle/pitch state and replacing only enhancement controls.
+    ProcessorParameters base{};
+    base.bypass = true;
+    base.pitchSemitones = -2.5f;
+    base.space = 0.9f;
+    base.nightMode = true;
+    base.bass = 0.9f;
+    base.virtualBass = 0.9f;
+    const auto compiled = compileSignatureControls(weakLf, base);
+    assert(compiled.processor.bypass == base.bypass);
+    assert(compiled.processor.pitchSemitones == base.pitchSemitones);
+    assert(compiled.processor.preampDb == weakPlan.preampDb);
+    assert(compiled.processor.bass == weakPlan.physicalBass);
+    assert(compiled.processor.virtualBass == weakPlan.virtualBass);
+    assert(compiled.processor.bassCapability == weakPlan.virtualBassCapability);
+    assert(compiled.processor.clarity == weakPlan.clarity);
+    assert(compiled.processor.fidelity == weakPlan.fidelity);
+    assert(compiled.processor.surround == weakPlan.surround);
+    assert(compiled.processor.ambience == weakPlan.ambience);
+    assert(compiled.processor.dynamics == weakPlan.dynamics);
+    assert(compiled.processor.space == 0.0f);
+    assert(!compiled.processor.nightMode);
+    assert(compiled.spatial.itdScale == weakPlan.spatial.itdScale);
+    assert(compiled.spatial.ipsilateralGain == weakPlan.spatial.ipsilateralGain);
+    assert(compiled.spatial.contralateralGain == weakPlan.spatial.contralateralGain);
+    assert(compiled.spatial.wetTrimDb == weakPlan.spatial.wetTrimDb);
 
     // Exhaust the edge cube for every policy input so future formula changes
     // cannot accidentally escape bounds at combinations not covered above.
