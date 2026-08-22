@@ -1,10 +1,38 @@
 # PulseFX
 
-PulseFX is a Windows system-wide audio enhancement project with a native realtime DSP engine, virtual playback endpoint, multichannel-to-binaural rendering, headphone correction, per-app volume control, and a desktop control surface.
+PulseFX is a Windows system-wide audio enhancement project built around a native realtime DSP engine, a virtual playback endpoint, device-aware enhancement, binaural rendering, headphone correction, per-app controls, and a desktop control surface.
 
-The target is feature parity with the Windows surface of Boom 3D 2.3.0 while keeping PulseFX's implementation, visual identity, and code original. Boom's proprietary DSP source, assets, and private headphone database are not copied.
+The engineering goal is no longer to merely copy a competitor feature list. PulseFX is being built as an original enhancement engine that aims to combine the strongest parts of products such as Boom 3D and FxSound while improving adaptability, transparency, realtime safety, and testability. Boom's proprietary DSP source/assets and FxSound's AGPL implementation are not copied into PulseFX.
 
-> **Status:** code-complete pre-release. The full repository implementation has passed the automated Windows/Linux native suite, desktop/Playwright interaction suite, x64 + ARM64 virtual-driver builds, A/B analysis tests, and verified x64 + ARM64 NSIS packaging. The remaining work is release validation outside hosted CI: trusted driver signing, real Windows hardware/lifecycle testing, and Boom-vs-PulseFX reference matching before claiming proprietary-DSP equivalence.
+> **Status:** code-complete pre-release candidate. The repository implementation now includes the adaptive Signature engine and has automated coverage across Windows/Linux native DSP, the Windows host, desktop/Playwright interactions, x64 + ARM64 virtual-driver builds, objective A/B tooling, and architecture-specific NSIS packaging. A public-quality release still requires trusted production driver signing, physical Windows lifecycle/hardware validation, and real volume-matched competitor/reference listening tests.
+
+## The default experience
+
+PulseFX is designed around one simple product test:
+
+> **Music is already playing → enable PulseFX → the same audio immediately feels clearer, larger, more separated and more externalized, without relying on a fake loudness jump.**
+
+Fresh installs start in **Signature Mode** with a Flat user EQ baseline. Existing saved users migrate safely to **Manual Mode** so their previous tone/effect choices are preserved.
+
+### Signature Mode
+
+Signature is a bounded native policy that compiles into the same tested DSP controls used by Manual Mode. It does not run an opaque AI model in the realtime callback.
+
+It adapts enhancement using conservative evidence including:
+
+- selected headphone-correction profile demand
+- estimated low-frequency capability from measured correction data
+- treble/harshness risk inferred from correction requirements
+- Windows physical-endpoint volume as a relative listening-level signal
+- device knowledge level (unknown / measured / genuinely personalized spatial profile)
+- content intent and low-latency policy hooks
+- explicit headroom limits and final true-peak protection
+
+AutoEq data is treated as headphone-response evidence, **not** falsely labeled as a personalized HRTF.
+
+### Manual Mode
+
+Manual Mode remains deterministic and fully user-controlled. Moving a sound-shaping control such as EQ, preamp, bass, clarity, fidelity, spatial, surround, ambience, dynamics, or Night Mode intentionally switches the engine to Manual. Master bypass, pitch, output routing, and headphone-correction enablement remain orthogonal controls.
 
 ## Current architecture
 
@@ -21,8 +49,12 @@ Windows apps / games / browsers
           ├─ stereo / 5.1 / 7.1 decode
           ├─ multichannel binaural render
           ├─ headphone correction
-          ├─ 31-band EQ
-          ├─ Fidelity / Spatial / Ambience / Night / Surround
+          ├─ 31-band user EQ
+          ├─ physical + psychoacoustic bass
+          ├─ adaptive Fidelity / Clarity
+          ├─ center-preserving externalization
+          ├─ click-free HRTF profile transitions
+          ├─ dynamics / Night Mode
           ├─ ±5 semitone spectral pitch shift
           └─ true-peak limiter
           │
@@ -31,20 +63,51 @@ Windows apps / games / browsers
  headphones / speakers / USB / Bluetooth / HDMI
 ```
 
-The Electron desktop controller is intentionally kept outside the realtime audio path. It communicates with the native host through a bounded command protocol and provides output selection, effects, EQ, a searchable pinned headphone-profile catalog, app-volume control, local player/playlists, Internet radio, tray Quick Controls, configurable global hotkeys, Windows Default Apps handoff, and Explorer audio-file launch/autoplay.
+The Electron controller stays outside the realtime audio path. Control snapshots are validated and published to the native host; expensive profile fitting, filesystem/network work, allocation-heavy work, and calibration logic stay off the per-sample path.
 
-## What is already done
+## What is implemented
+
+### Audio engine
 
 - [x] Native realtime DSP engine
 - [x] System-wide `PulseFX Output` virtual playback endpoint architecture
 - [x] Event-driven WASAPI relay with clock-drift correction and recovery
-- [x] Stereo, 5.1, and 7.1 input handling
+- [x] Stereo, 5.1, and 7.1 source handling
 - [x] Multichannel-to-binaural rendering
 - [x] 31-band EQ and preset surface
-- [x] Fidelity, Spatial, Ambience, Night Mode, and 3D/HRTF Surround
+- [x] Adaptive Signature policy with bounded finite outputs
+- [x] Signature → normal processor-control compiler (one audio chain, not a hidden second engine)
+- [x] Physical bass enhancement for capable transducers
+- [x] Separate psychoacoustic virtual-bass engine for limited transducers
+- [x] Smoothed virtual-bass control transitions
+- [x] Adaptive clarity / de-masking instead of a fixed presence boost
+- [x] Fidelity enhancement
+- [x] Center-preserving perceptual externalization
+- [x] Low-frequency spatial anchoring and anti-overwide guard
+- [x] Damped binaural early reflections
+- [x] HRTF/binaural surround
+- [x] Personalized spatial-profile transformation hooks
+- [x] Three-bank click-free HRTF profile crossfades
+- [x] Rapid profile-update coalescing without coefficient loading in `processStereo()`
 - [x] ±5 semitone pitch shifting
-- [x] True-peak output protection
+- [x] Lookahead true-peak limiter
+- [x] Non-finite input/parameter defense at protocol, processor, FIR, and DSP boundaries
+
+### Device adaptation
+
 - [x] Pinned AutoEq headphone-correction workflow with thousands of searchable models
+- [x] Device-response analysis for correction demand, LF capability, and treble-risk policy inputs
+- [x] Conservative behavior for unknown headphones
+- [x] Stronger virtual-bass assistance only when measured LF correction evidence supports it
+- [x] Reduced unnecessary coloration for more capable devices
+- [x] Real Windows endpoint-volume input for relative low-volume compensation
+- [x] Separate measured-response knowledge from genuinely personalized HRTF knowledge
+
+### Product / Windows integration
+
+- [x] Signature / Manual mode migration and persistence
+- [x] Visible Signature / Manual desktop control
+- [x] Manual sound controls intentionally take ownership from Signature
 - [x] Per-application Windows volume and mute controls
 - [x] Output-device selection and routing telemetry
 - [x] Realtime-safe live control updates
@@ -55,129 +118,124 @@ The Electron desktop controller is intentionally kept outside the realtime audio
 - [x] Explorer file associations, cold/warm launch handoff, deduplication, and autoplay
 - [x] Internet radio search plus Popular / Local / Country browsing
 - [x] Windows Default Apps handoff
-- [x] x64 virtual-audio-driver build
-- [x] ARM64 virtual-audio-driver build
+- [x] x64 + ARM64 virtual-audio-driver builds
 - [x] SetupAPI root-device creation and safe uninstall flow
 - [x] Fail-closed driver installation and device-health verification
-- [x] x64 NSIS installer packaging
-- [x] ARM64 NSIS installer packaging
-- [x] Full Playwright UI interaction tests, including all major controls and 31 EQ bands
-- [x] Windows and Linux native regression tests
-- [x] Objective Boom/PulseFX A/B analysis tooling
+- [x] x64 + ARM64 NSIS installer packaging
 
-The exact hardening head passed the complete CI matrix end-to-end, including both verified Windows installer artifacts.
+### Automated quality gates
 
-## What's left to do
+- [x] Windows and Linux native regression suites
+- [x] Adaptive Signature edge-cube / bounds / non-finite tests
+- [x] Virtual-bass silence, transparency, spectral, centered-image, and transition tests
+- [x] Adaptive-clarity masked-vs-bright/transient tests
+- [x] Externalization bass-anchor, mono-center, anti-phase, reflection, and finite-output tests
+- [x] Live HRTF profile-swap discontinuity tests
+- [x] Host protocol hostile-input tests
+- [x] Windows host-process smoke test
+- [x] Full Playwright primary-interaction suite
+- [x] Fresh-install Signature + Flat migration test
+- [x] Legacy-settings → Manual preservation test
+- [x] Manual-control → Manual-mode persistence test
+- [x] Explicit Signature / Manual selector interaction tests
+- [x] Objective probe/capture characterization and A/B analysis tooling
+- [x] Architecture-matched packaged-host/helper/driver verification
 
-The repository implementation is no longer waiting on ordinary feature development. The remaining work is release proof that requires a trusted Windows environment and real reference audio.
+## What is still required before calling it a validated release
+
+These are **external proof gates**, not excuses to weaken the implementation or Windows security.
 
 ### 1. Production driver signing 🔐
 
-The virtual audio driver built by CI is currently **unsigned**. Windows is expected to reject it on a normal Secure-Boot-enabled machine.
+The CI virtual-audio-driver artifacts are unsigned. A normal Secure-Boot-enabled Windows installation is expected to reject an untrusted kernel driver.
 
-Before a normal public/private release:
+- [ ] Obtain the required trusted Windows driver-signing credentials/process
+- [ ] Sign `.sys` / `.cat` through the proper production path
+- [ ] Verify with kernel-policy signature verification
+- [ ] Confirm installation succeeds with normal Windows security enabled
 
-- [ ] Obtain the required Windows code-signing / driver-signing credentials
-- [ ] Sign the PulseFX driver package using the proper production Windows driver-signing path
-- [ ] Verify the resulting `.sys` / `.cat` package with kernel-policy signature verification
-- [ ] Confirm the installer succeeds without disabling Secure Boot or driver-signature enforcement
+PulseFX must **not** depend on test-signing mode, disabled signature enforcement, disabled Secure Boot, or similar security downgrades.
 
-PulseFX must **not** rely on test-signing mode, disabled signature enforcement, disabled Secure Boot, or other security downgrades for normal installation.
+### 2. Physical Windows validation 🖥️
 
-### 2. Clean Windows installation + real hardware validation 🖥️
-
-Run the signed installer on a normal physical Windows machine and complete the matrix in [`docs/WINDOWS_VALIDATION.md`](docs/WINDOWS_VALIDATION.md).
+Run the trusted installer on normal physical Windows hardware and complete [`docs/WINDOWS_VALIDATION.md`](docs/WINDOWS_VALIDATION.md).
 
 At minimum:
 
-- [ ] Fresh install on a clean Windows machine
-- [ ] Confirm `PulseFX Output` appears and starts correctly
-- [ ] Set `PulseFX Output` as the Windows playback device
-- [ ] Confirm routing to built-in speakers/headphone jack
-- [ ] Test USB headphones / DAC
-- [ ] Test Bluetooth headphones
-- [ ] Test HDMI / monitor output where available
-- [ ] Switch physical outputs while audio is playing
-- [ ] Unplug/replug devices during playback
-- [ ] Test Windows default-device changes
-- [ ] Test application volume/mute controls with real apps
-- [ ] Test stereo sources
-- [ ] Test real 5.1 and 7.1 sources
-- [ ] Test sleep → resume
-- [ ] Test reboot → relaunch → settings restore
-- [ ] Kill/restart the native host and verify recovery
-- [ ] Run long playback sessions and confirm no accumulating clock drift
-- [ ] Confirm zero unacceptable underruns/overruns/dropouts
-- [ ] Test install → upgrade → uninstall → reinstall lifecycle
+- [ ] clean install / upgrade / uninstall / reinstall
+- [ ] `PulseFX Output` creation and removal
+- [ ] existing-audio activation experience
+- [ ] built-in speakers / headphone jack
+- [ ] USB headphones / DAC
+- [ ] Bluetooth
+- [ ] HDMI / monitor output
+- [ ] live device switching and unplug/replug
+- [ ] Windows default-device changes
+- [ ] real application session volume/mute
+- [ ] stereo / 5.1 / 7.1 sources
+- [ ] sleep/resume and reboot/relaunch
+- [ ] native-host kill/recovery
+- [ ] long playback sessions for drift/dropouts
+- [ ] unacceptable underrun/overrun investigation until clean
 
-### 3. Boom 3D reference matching 🎧
+### 3. Real listening and competitor/reference proof 🎧
 
-Feature parity is implemented, but PulseFX must **not** be described as acoustically identical to Boom 3D until black-box testing proves it.
+PulseFX must **not** be called “better than Boom 3D,” “better than FxSound,” or “the best sound enhancer ever built” merely because the architecture is ambitious or tests are green.
 
-Use the same lossless source material through both processors:
+Use identical lossless material and controlled captures:
 
 ```text
-same source audio
-      │
-      ├──────────────► Boom 3D capture
-      │
-      └──────────────► PulseFX capture
-                            │
-                            ▼
-                     automatic alignment
-                            │
-                     loudness matching
-                            │
-          spectrum / dynamics / stereo / peaks
-                            │
-                       residual error
-                            │
-                      tune PulseFX DSP
-                            │
-                          repeat
+same source
+   ├──► reference / competitor capture
+   └──► PulseFX capture
+             │
+             ├─ latency alignment
+             ├─ loudness matching
+             ├─ true-peak/headroom comparison
+             ├─ spectrum / dynamics / stereo metrics
+             └─ residual / behavior profiling
+                         │
+                         ▼
+                   tune and repeat
+                         │
+                         ▼
+               randomized blind listening
 ```
 
-Required work:
+Required evidence:
 
-- [ ] Capture Boom 3D and PulseFX output from identical lossless test material
-- [ ] Test every major Boom effect independently
-- [ ] Test documented compatible effect combinations
-- [ ] Compare 31-band EQ behavior and presets
-- [ ] Compare stereo width and HRTF/spatial behavior
-- [ ] Compare transient response and dynamics
-- [ ] Compare true-peak/headroom behavior
-- [ ] Compare quiet/detail behavior of Fidelity and Night Mode
-- [ ] Test multichannel surround material
-- [ ] Tune PulseFX where objective deltas remain meaningful
-- [ ] Perform volume-matched blind listening tests
-- [ ] Repeat across multiple music genres, speech, film/game material, and headphones
+- [ ] Boom 3D default “instant wow” capture
+- [ ] FxSound default/reference capture where useful
+- [ ] individual effect and strength captures
+- [ ] 31-band EQ/preset characterization
+- [ ] bass and low-volume behavior
+- [ ] clarity/transient behavior
+- [ ] stereo/externalization/HRTF behavior
+- [ ] limiter/headroom behavior
+- [ ] multichannel material
+- [ ] multiple headphone quality levels
+- [ ] volume-matched randomized blind listening
+- [ ] repeated tuning until material weaknesses are understood
 
-Acceptance criteria and the current parity matrix live in [`docs/BOOM_PARITY_MATRIX.md`](docs/BOOM_PARITY_MATRIX.md).
-
-### 4. Release polish after validation 🚀
-
-Once the three gates above pass:
-
-- [ ] Produce trusted signed x64 and ARM64 installers
-- [ ] Run one final release-candidate CI matrix
-- [ ] Publish versioned release artifacts and checksums
-- [ ] Add installation/troubleshooting documentation based on the real clean-machine test
-- [ ] Mark the first validated build as the PulseFX release candidate / v1.0
+The black-box tools live under `tools/`; acceptance criteria and reference strategy are documented under `docs/`.
 
 ## Engineering principles
 
 - Audio quality before feature count.
-- Bit-transparent master bypass apart from declared fixed pipeline latency.
-- No UI/network/filesystem work in the realtime callback.
-- Bounded, validated control messages across the desktop/native boundary.
-- No silent routing failures: bad device/profile states fail open and surface an error.
-- True-peak output protection under aggressive presets and gain.
-- Reproducible dependency/data revisions for audio algorithms and headphone profiles.
-- Loudness-matched A/B analysis before calling one signal “better.”
-- No weakening Secure Boot, Windows driver-signature enforcement, or OS security to make installation appear successful.
+- “Instant wow” must not be a disguised loudness increase.
+- One tested DSP chain for Signature and Manual.
+- No UI/network/filesystem/calibration work in the realtime callback.
+- Fixed/bounded realtime storage for critical DSP paths.
+- Bounded, validated, finite-only control messages.
+- Smooth state/profile transitions instead of audible hard resets.
+- Preserve center image, bass anchoring, transients, and headroom while creating spaciousness.
+- Device-adaptive processing rather than one overcooked universal preset.
+- Unknown hardware gets conservative behavior; measured evidence earns stronger adaptation.
+- True-peak protection remains the final safety stage, not a permanent tone shaper.
+- Reproducible dependency/data revisions.
+- Loudness-matched A/B and blind listening before superiority claims.
+- No weakening Windows security to make installation look successful.
 
-## Release gates
+## Release rule
 
-Automated CI covers native DSP/host tests on Windows and Linux, the reference A/B analyzer, desktop syntax/build checks, the full Playwright UI interaction suite, AutoEq profile parsing, radio URL/input sanitization, x64/ARM64 virtual-driver packages, and architecture-specific NSIS installers.
-
-Automated tests are necessary but not sufficient for a system-wide audio product. A production release must additionally pass trusted kernel-driver signing, clean-machine driver installation, physical device hot-plug/sleep/reboot/long-run testing, and the Boom black-box reference-matching matrix documented under `docs/`.
+Automated CI is necessary but not sufficient for a system-wide audio product. PulseFX becomes a validated release only after the **exact release-candidate commit** passes the complete CI/package matrix **and** the trusted signing, physical Windows, and controlled listening/reference gates above are completed.
