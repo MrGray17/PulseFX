@@ -7,6 +7,7 @@
 #include "FidelityEnhancer.h"
 #include "HeadphoneCorrection.h"
 #include "Limiter.h"
+#include "PitchShifter.h"
 #include "SmoothedValue.h"
 #include "SpatialSurround.h"
 #include "StereoEnhancer.h"
@@ -24,6 +25,7 @@ struct ProcessorParameters {
     float surround{0.0f};    // HRTF/binaural virtualization
     float ambience{0.0f};    // early reflections
     float dynamics{0.0f};
+    float pitchSemitones{0.0f};
     bool nightMode{false};
 };
 
@@ -36,8 +38,11 @@ public:
     Equalizer& equalizer() noexcept { return equalizer_; }
     HeadphoneCorrection& headphoneCorrection() noexcept { return headphoneCorrection_; }
     SpatialSurround& spatialSurround() noexcept { return spatialSurround_; }
+    PitchShifter& pitchShifter() noexcept { return pitchShifter_; }
+    const PitchShifter& pitchShifter() const noexcept { return pitchShifter_; }
     Limiter& limiter() noexcept { return limiter_; }
     const Limiter& limiter() const noexcept { return limiter_; }
+    std::size_t latencySamples() const noexcept;
     void processInterleaved(float* samples, std::size_t frames, std::size_t channels) noexcept;
 
 private:
@@ -50,6 +55,7 @@ private:
     FidelityEnhancer fidelity_{};
     ClarityEnhancer clarity_{};
     Dynamics dynamics_{};
+    PitchShifter pitchShifter_{};
     SpatialSurround spatialSurround_{};
     Ambience ambience_{};
     StereoEnhancer stereo_{};

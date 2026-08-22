@@ -1,0 +1,1 @@
+PulseFX CI places the architecture-matched virtual audio driver package in this directory before electron-builder runs.

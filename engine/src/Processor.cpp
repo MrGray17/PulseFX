@@ -8,6 +8,7 @@ float dbToLinear(float db) noexcept { return std::pow(10.0f, db / 20.0f); }
 }
 
 void Processor::prepare(float sampleRate) noexcept {
+    const ProcessorParameters desired = parameters_;
     sampleRate_ = std::clamp(sampleRate, 8000.0f, 384000.0f);
     preampGain_.prepare(sampleRate_, 30.0f, 1.0f);
     equalizer_.prepare(sampleRate_);
@@ -16,6 +17,7 @@ void Processor::prepare(float sampleRate) noexcept {
     fidelity_.prepare(sampleRate_);
     clarity_.prepare(sampleRate_);
     dynamics_.prepare(sampleRate_);
+    pitchShifter_.prepare(sampleRate_);
     spatialSurround_.prepare(sampleRate_);
     ambience_.prepare(sampleRate_);
     stereo_.prepare(sampleRate_);
@@ -23,40 +25,56 @@ void Processor::prepare(float sampleRate) noexcept {
     limiter_.setCeilingDb(-1.0f);
     limiter_.setLookaheadMs(5.0f);
     limiter_.setReleaseMs(110.0f);
-    setParameters(parameters_);
+
+    // prepare() resets some stage internals (notably preamp and pitch). Make the
+    // first post-prepare parameter application compare against a neutral logical
+    // baseline so desired non-default controls are always restored. Later live
+    // updates remain delta-only.
+    parameters_ = ProcessorParameters{};
+    setParameters(desired);
 }
 
 void Processor::setParameters(const ProcessorParameters& parameters) noexcept {
-    parameters_ = parameters;
-    parameters_.preampDb = std::clamp(parameters_.preampDb, -18.0f, 9.0f);
-    parameters_.bass = std::clamp(parameters_.bass, 0.0f, 1.0f);
-    parameters_.clarity = std::clamp(parameters_.clarity, 0.0f, 1.0f);
-    parameters_.fidelity = std::clamp(parameters_.fidelity, 0.0f, 1.0f);
-    parameters_.space = std::clamp(parameters_.space, 0.0f, 1.0f);
-    parameters_.surround = std::clamp(parameters_.surround, 0.0f, 1.0f);
-    parameters_.ambience = std::clamp(parameters_.ambience, 0.0f, 1.0f);
-    parameters_.dynamics = std::clamp(parameters_.dynamics, 0.0f, 1.0f);
+    ProcessorParameters next = parameters;
+    next.preampDb = std::clamp(next.preampDb, -18.0f, 9.0f);
+    next.bass = std::clamp(next.bass, 0.0f, 1.0f);
+    next.clarity = std::clamp(next.clarity, 0.0f, 1.0f);
+    next.fidelity = std::clamp(next.fidelity, 0.0f, 1.0f);
+    next.space = std::clamp(next.space, 0.0f, 1.0f);
+    next.surround = std::clamp(next.surround, 0.0f, 1.0f);
+    next.ambience = std::clamp(next.ambience, 0.0f, 1.0f);
+    next.dynamics = std::clamp(next.dynamics, 0.0f, 1.0f);
+    next.pitchSemitones = std::clamp(next.pitchSemitones, -5.0f, 5.0f);
 
     // Match the reference product's documented effect compatibility while
     // keeping transitions smoothed internally.
-    if (parameters_.surround > 0.0f) {
-        parameters_.space = 0.0f;
-        parameters_.ambience = 0.0f;
-        parameters_.nightMode = false;
-    } else if (parameters_.ambience > 0.0f) {
-        parameters_.space = 0.0f;
-        parameters_.nightMode = false;
+    if (next.surround > 0.0f) {
+        next.space = 0.0f;
+        next.ambience = 0.0f;
+        next.nightMode = false;
+    } else if (next.ambience > 0.0f) {
+        next.space = 0.0f;
+        next.nightMode = false;
     }
 
-    preampGain_.setTarget(dbToLinear(parameters_.preampDb));
-    bass_.setAmount(parameters_.bass);
-    fidelity_.setAmount(parameters_.fidelity);
-    clarity_.setAmount(parameters_.clarity);
-    spatialSurround_.setAmount(parameters_.surround);
-    ambience_.setAmount(parameters_.ambience);
-    stereo_.setAmount(parameters_.space);
-    dynamics_.setAmount(parameters_.dynamics);
-    dynamics_.setNightMode(parameters_.nightMode);
+    const ProcessorParameters previous = parameters_;
+    parameters_ = next;
+
+    // Control snapshots arrive at audio packet boundaries. Avoid touching DSP
+    // modules whose effective parameter did not change: several modules rebuild
+    // biquad targets and therefore perform trig/pow work in their setters.
+    // Delta-application keeps normal live UI automation extremely small while
+    // preserving the existing coefficient smoothing/state of unchanged stages.
+    if (previous.preampDb != next.preampDb) preampGain_.setTarget(dbToLinear(next.preampDb));
+    if (previous.bass != next.bass) bass_.setAmount(next.bass);
+    if (previous.fidelity != next.fidelity) fidelity_.setAmount(next.fidelity);
+    if (previous.clarity != next.clarity) clarity_.setAmount(next.clarity);
+    if (previous.pitchSemitones != next.pitchSemitones) pitchShifter_.setSemitones(next.pitchSemitones);
+    if (previous.surround != next.surround) spatialSurround_.setAmount(next.surround);
+    if (previous.ambience != next.ambience) ambience_.setAmount(next.ambience);
+    if (previous.space != next.space) stereo_.setAmount(next.space);
+    if (previous.dynamics != next.dynamics) dynamics_.setAmount(next.dynamics);
+    if (previous.nightMode != next.nightMode) dynamics_.setNightMode(next.nightMode);
 }
 
 void Processor::reset() noexcept {
@@ -67,18 +85,26 @@ void Processor::reset() noexcept {
     fidelity_.reset();
     clarity_.reset();
     dynamics_.reset();
+    pitchShifter_.reset();
     spatialSurround_.reset();
     ambience_.reset();
     stereo_.reset();
     limiter_.reset();
 }
 
+std::size_t Processor::latencySamples() const noexcept {
+    return limiter_.latencySamples() + pitchShifter_.latencySamples();
+}
+
 void Processor::processInterleaved(float* samples, std::size_t frames, std::size_t channels) noexcept {
-    if (!samples || frames == 0 || channels < 2) return;
+    if (!samples || frames == 0 || channels < 2 || parameters_.bypass) return;
+
+    // Tone/dynamics stage. Pitch is block-based, so the chain is deliberately
+    // split around it rather than allocating or buffering inside a per-sample
+    // processor.
     for (std::size_t frame = 0; frame < frames; ++frame) {
         float& leftOut = samples[frame * channels];
         float& rightOut = samples[frame * channels + 1];
-        if (parameters_.bypass) continue;
         const float gain = preampGain_.next();
         float left = std::isfinite(leftOut) ? leftOut * gain : 0.0f;
         float right = std::isfinite(rightOut) ? rightOut * gain : 0.0f;
@@ -88,13 +114,24 @@ void Processor::processInterleaved(float* samples, std::size_t frames, std::size
         fidelity_.processStereo(left, right);
         clarity_.processStereo(left, right);
         dynamics_.processStereo(left, right);
+        leftOut = left;
+        rightOut = right;
+    }
 
-        // All spatial processors keep their history warm. Compatibility rules
-        // above ensure only the requested path has a non-zero target amount.
+    if (channels == 2 && pitchShifter_.active()) {
+        pitchShifter_.processInterleaved(samples, frames);
+    }
+
+    // Spatial/output-protection stage. Keeping the limiter last means every
+    // effect, including pitch, is covered by the same true-peak ceiling.
+    for (std::size_t frame = 0; frame < frames; ++frame) {
+        float& leftOut = samples[frame * channels];
+        float& rightOut = samples[frame * channels + 1];
+        float left = std::isfinite(leftOut) ? leftOut : 0.0f;
+        float right = std::isfinite(rightOut) ? rightOut : 0.0f;
         spatialSurround_.processStereo(left, right);
         ambience_.processStereo(left, right);
         stereo_.processStereo(left, right);
-
         limiter_.processStereo(left, right);
         leftOut = left;
         rightOut = right;

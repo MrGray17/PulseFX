@@ -1,22 +1,27 @@
-name: DSP CI
+name: PulseFX CI
 
 on:
   push:
     paths:
       - 'engine/**'
       - 'windows/**'
+      - 'app/**'
+      - 'tools/**'
       - 'CMakeLists.txt'
       - '.github/workflows/dsp-ci.yml'
   pull_request:
     paths:
       - 'engine/**'
       - 'windows/**'
+      - 'app/**'
+      - 'tools/**'
       - 'CMakeLists.txt'
       - '.github/workflows/dsp-ci.yml'
 
 jobs:
-  test:
+  native:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -32,3 +37,177 @@ jobs:
         run: cmake --build build --config Debug
       - name: Test
         run: ctest --test-dir build -C Debug --output-on-failure
+      - name: Verify virtual-device setup helper CLI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $helper = (Resolve-Path './build/Debug/pulsefx_device_setup.exe').Path
+          if (-not (Test-Path -LiteralPath $helper)) { throw 'PulseFX device setup helper was not built.' }
+          $usage = Start-Process -FilePath $helper -ArgumentList 'unknown' -Wait -PassThru -NoNewWindow
+          if ($usage.ExitCode -ne 64) { throw "Expected helper usage exit code 64, got $($usage.ExitCode)" }
+          $exists = Start-Process -FilePath $helper -ArgumentList 'exists' -Wait -PassThru -NoNewWindow
+          if ($exists.ExitCode -notin @(0, 2)) { throw "Unexpected helper exists exit code: $($exists.ExitCode)" }
+      - name: Smoke-test native host process
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./windows/host/host_process_smoke.ps1 -HostPath './build/Debug/pulsefx_audio_host.exe'
+
+  driver:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [x64, arm64]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and validate PulseFX virtual audio driver
+        shell: pwsh
+        run: ./windows/driver/build-driver-ci.ps1 -Configuration Release -Platform ${{ matrix.platform }}
+      - name: Verify driver package
+        shell: pwsh
+        run: |
+          $root = 'windows/driver/out-ci'
+          $sys = Get-ChildItem -Path $root -Filter '*.sys' | Select-Object -First 1
+          $inf = Get-ChildItem -Path $root -Filter '*.inf' | Select-Object -First 1
+          $cat = Get-ChildItem -Path $root -Filter '*.cat' | Select-Object -First 1
+          if (-not $sys) { throw 'Virtual audio driver .sys was not produced.' }
+          if (-not $inf) { throw 'Virtual audio driver .inf was not produced.' }
+          if (-not $cat) { throw 'Virtual audio driver catalog was not produced.' }
+          $manifest = Get-Content -Raw (Join-Path $root 'PULSEFX_BUILD.txt')
+          if (-not $manifest.Contains('render_formats=stereo,5.1-surround,7.1-surround')) {
+            throw 'Driver manifest does not declare the multichannel format matrix.'
+          }
+          if (-not $manifest.Contains('platform=${{ matrix.platform }}')) {
+            throw 'Driver manifest platform does not match the CI matrix.'
+          }
+      - name: Upload unsigned driver package
+        uses: actions/upload-artifact@v4
+        with:
+          name: pulsefx-virtual-audio-driver-${{ matrix.platform }}-unsigned
+          path: windows/driver/out-ci/**
+          if-no-files-found: error
+          retention-days: 7
+
+  quality-lab:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test A/B reference analyzer
+        run: python tools/tests/test_audio_lab.py
+
+  desktop:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install desktop dependencies
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Check Electron main process
+        run: node --check electron/main.cjs
+      - name: Check Electron preload
+        run: node --check electron/preload.cjs
+      - name: Check AutoEq service
+        run: node --check electron/autoeq.cjs
+      - name: Test AutoEq parsing and native payloads
+        run: node electron/autoeq.test.cjs
+      - name: Check radio service
+        run: node --check electron/radio.cjs
+      - name: Test radio URL and station sanitization
+        run: node electron/radio.test.cjs
+      - name: Check associated media launch parser
+        run: node --check electron/mediaLaunch.cjs
+      - name: Test associated media launch parsing
+        run: node electron/mediaLaunch.test.cjs
+      - name: Build renderer
+        run: npm run build
+      - name: Install Chromium for UI tests
+        run: npx playwright install chromium
+      - name: Test every primary UI interaction
+        run: npm run test:ui
+      - name: Upload UI failure traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pulsefx-ui-test-results
+          path: app/test-results/**
+          if-no-files-found: ignore
+          retention-days: 7
+
+  package-windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            cmake_arch: x64
+            driver_platform: x64
+          - arch: arm64
+            cmake_arch: ARM64
+            driver_platform: arm64
+    runs-on: windows-latest
+    needs: [native, driver, desktop, quality-lab]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download matching virtual audio driver
+        uses: actions/download-artifact@v4
+        with:
+          name: pulsefx-virtual-audio-driver-${{ matrix.driver_platform }}-unsigned
+          path: app/driver-package
+      - name: Verify downloaded driver package
+        shell: pwsh
+        run: |
+          $inf = Get-ChildItem -Path 'app/driver-package' -Recurse -Filter '*.inf' | Select-Object -First 1
+          $sys = Get-ChildItem -Path 'app/driver-package' -Recurse -Filter '*.sys' | Select-Object -First 1
+          $cat = Get-ChildItem -Path 'app/driver-package' -Recurse -Filter '*.cat' | Select-Object -First 1
+          if (-not $inf -or -not $sys -or -not $cat) { throw 'Architecture-matched driver package is incomplete.' }
+      - name: Configure native Release components
+        run: cmake -S . -B build -A ${{ matrix.cmake_arch }} -DPULSEFX_BUILD_WASAPI_RELAY=ON
+      - name: Build native Release host and device helper
+        run: |
+          cmake --build build --config Release --target pulsefx_audio_host
+          cmake --build build --config Release --target pulsefx_device_setup
+      - name: Verify native Release components
+        shell: pwsh
+        run: |
+          if (-not (Test-Path './build/Release/pulsefx_audio_host.exe')) { throw 'Release audio host was not produced.' }
+          if (-not (Test-Path './build/Release/pulsefx_device_setup.exe')) { throw 'Release device setup helper was not produced.' }
+      - name: Install desktop dependencies
+        working-directory: app
+        run: npm install --no-audit --no-fund
+      - name: Build renderer
+        working-directory: app
+        run: npm run build
+      - name: Build architecture-specific NSIS installer
+        working-directory: app
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --win nsis --${{ matrix.arch }}
+      - name: Verify packaged host, setup helper, and driver
+        shell: pwsh
+        run: |
+          $nativeHost = Get-ChildItem -Path 'app/release' -Recurse -Filter 'pulsefx_audio_host.exe' |
+            Where-Object { $_.FullName -match '[\\/]resources[\\/]native[\\/]' } |
+            Select-Object -First 1
+          $helper = Get-ChildItem -Path 'app/release' -Recurse -Filter 'pulsefx_device_setup.exe' |
+            Where-Object { $_.FullName -match '[\\/]resources[\\/]native[\\/]' } |
+            Select-Object -First 1
+          $driver = Get-ChildItem -Path 'app/release' -Recurse -Filter '*.inf' |
+            Where-Object { $_.FullName -match '[\\/]resources[\\/]driver[\\/]' } |
+            Select-Object -First 1
+          $installer = Get-ChildItem -Path 'app/release' -Filter 'PulseFX-Setup-*-${{ matrix.arch }}.exe' | Select-Object -First 1
+          if (-not $nativeHost) { throw 'Packaged native host is missing.' }
+          if (-not $helper) { throw 'Packaged virtual-device setup helper is missing.' }
+          if (-not $driver) { throw 'Packaged virtual audio driver is missing.' }
+          if (-not $installer) { throw 'Architecture-specific PulseFX installer was not produced.' }
+          Write-Host "Validated installer: $($installer.FullName)"
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: pulsefx-windows-installer-${{ matrix.arch }}
+          path: app/release/PulseFX-Setup-*-${{ matrix.arch }}.exe
+          if-no-files-found: error
+          retention-days: 7

@@ -1,19 +1,81 @@
 {
   "name": "pulsefx-control",
+  "productName": "PulseFX",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
+  "description": "PulseFX system-wide audio enhancement controller",
+  "main": "electron/main.cjs",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev:web": "vite --host 127.0.0.1",
+    "dev:electron": "wait-on http://127.0.0.1:5173 && electron . --dev",
+    "dev": "concurrently -k -n web,desktop \"npm:dev:web\" \"npm:dev:electron\"",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview --host 127.0.0.1 --port 4173",
+    "test:ui": "playwright test",
+    "desktop": "electron .",
+    "dist:win": "npm run build && electron-builder --win nsis"
   },
   "dependencies": {
-    "@vitejs/plugin-react": "latest",
-    "vite": "latest",
-    "react": "latest",
-    "react-dom": "latest",
-    "lucide-react": "latest"
+    "lucide-react": "1.33.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@vitejs/plugin-react": "6.1.0",
+    "concurrently": "10.0.4",
+    "electron": "43.4.0",
+    "electron-builder": "26.15.3",
+    "vite": "8.2.2",
+    "wait-on": "9.1.0"
+  },
+  "build": {
+    "appId": "dev.pulsefx.desktop",
+    "productName": "PulseFX",
+    "asar": true,
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../build/Release/pulsefx_audio_host.exe",
+        "to": "native/pulsefx_audio_host.exe"
+      },
+      {
+        "from": "../build/Release/pulsefx_device_setup.exe",
+        "to": "native/pulsefx_device_setup.exe"
+      },
+      {
+        "from": "driver-package",
+        "to": "driver",
+        "filter": ["**/*"]
+      }
+    ],
+    "fileAssociations": [
+      {
+        "ext": ["mp3", "wav", "flac", "m4a", "aac", "ogg", "opus", "webm"],
+        "name": "PulseFX Audio",
+        "description": "Audio file"
+      }
+    ],
+    "win": {
+      "target": ["nsis"],
+      "artifactName": "PulseFX-Setup-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": true,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false,
+      "include": "build/installer.nsh"
+    }
+  }
 }

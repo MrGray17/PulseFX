@@ -12,7 +12,6 @@
 #include <wrl/client.h>
 #include <algorithm>
 #include <atomic>
-#include <cstring>
 #include <future>
 #include <mutex>
 #include <thread>
@@ -45,31 +44,42 @@ struct CoTaskMemWaveFormat {
     ~CoTaskMemWaveFormat() { if (value) CoTaskMemFree(value); }
 };
 
-bool detectStereoEncoding(
-    const WAVEFORMATEX* format,
-    StereoSampleEncoding& encoding) noexcept {
-    if (!format || format->nChannels != 2) return false;
+struct SourceFormatInfo {
+    SampleEncoding encoding{SampleEncoding::Float32};
+    std::size_t channels{0};
+    DWORD channelMask{0};
+};
+
+bool supportedChannelCount(std::size_t channels) noexcept {
+    return channels == 2 || channels == 6 || channels == 8;
+}
+
+bool detectSourceFormat(const WAVEFORMATEX* format, SourceFormatInfo& info) noexcept {
+    if (!format || !supportedChannelCount(format->nChannels)) return false;
+    info.channels = format->nChannels;
+    info.channelMask = 0;
 
     if (format->wFormatTag == WAVE_FORMAT_IEEE_FLOAT && format->wBitsPerSample == 32) {
-        encoding = StereoSampleEncoding::Float32;
+        info.encoding = SampleEncoding::Float32;
         return true;
     }
     if (format->wFormatTag == WAVE_FORMAT_PCM && format->wBitsPerSample == 16) {
-        encoding = StereoSampleEncoding::Pcm16;
+        info.encoding = SampleEncoding::Pcm16;
         return true;
     }
     if (format->wFormatTag != WAVE_FORMAT_EXTENSIBLE ||
         format->cbSize < sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX)) return false;
 
     const auto* extensible = reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(format);
+    info.channelMask = extensible->dwChannelMask;
     if (IsEqualGUID(extensible->SubFormat, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT) != FALSE &&
         format->wBitsPerSample == 32) {
-        encoding = StereoSampleEncoding::Float32;
+        info.encoding = SampleEncoding::Float32;
         return true;
     }
     if (IsEqualGUID(extensible->SubFormat, KSDATAFORMAT_SUBTYPE_PCM) != FALSE &&
         format->wBitsPerSample == 16) {
-        encoding = StereoSampleEncoding::Pcm16;
+        info.encoding = SampleEncoding::Pcm16;
         return true;
     }
     return false;
@@ -186,8 +196,8 @@ struct WasapiRelay::Impl {
             pendingControl = state;
             requestedControlRevision.fetch_add(1, std::memory_order_release);
         } catch (...) {
-            // Control updates are best effort. The previous valid DSP state
-            // remains active if a control-thread runtime failure occurs.
+            // Keep the previous valid DSP state if the non-realtime control
+            // thread ever fails to copy a new state.
         }
     }
 
@@ -195,11 +205,9 @@ struct WasapiRelay::Impl {
         const auto requested = requestedControlRevision.load(std::memory_order_acquire);
         if (requested == appliedControlRevision.load(std::memory_order_relaxed)) return;
         if (!controlMutex.try_lock()) return;
-
         const ApoControlState next = pendingControl;
         const auto revision = requestedControlRevision.load(std::memory_order_acquire);
         controlMutex.unlock();
-
         bridge.applyControlState(next);
         appliedControlRevision.store(revision, std::memory_order_release);
     }
@@ -220,6 +228,7 @@ struct WasapiRelay::Impl {
         bufferedFrames.store(0, std::memory_order_relaxed);
         clockCorrectionPpm.store(0.0f, std::memory_order_relaxed);
         appliedControlRevision.store(0, std::memory_order_relaxed);
+        requestedControlRevision.store(0, std::memory_order_relaxed);
         updateControlState(config.control);
 
         std::promise<bool> ready;
@@ -264,7 +273,6 @@ struct WasapiRelay::Impl {
 
         DWORD mmcssTaskIndex = 0;
         HANDLE mmcssHandle = AvSetMmThreadCharacteristicsW(L"Pro Audio", &mmcssTaskIndex);
-
         UniqueHandle captureEvent(CreateEventW(nullptr, FALSE, FALSE, nullptr));
         UniqueHandle renderEvent(CreateEventW(nullptr, FALSE, FALSE, nullptr));
         if (!captureEvent || !renderEvent || !stopEvent) {
@@ -284,7 +292,7 @@ struct WasapiRelay::Impl {
         CoTaskMemWaveFormat sourceFormat;
         UINT32 sourceBufferFrames = 0;
         UINT32 destinationBufferFrames = 0;
-        StereoSampleEncoding sourceEncoding = StereoSampleEncoding::Float32;
+        SourceFormatInfo sourceInfo{};
 
         HRESULT hr = CoCreateInstance(
             __uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
@@ -300,7 +308,7 @@ struct WasapiRelay::Impl {
                 reinterpret_cast<void**>(sourceClient.GetAddressOf()));
         }
         if (SUCCEEDED(hr)) hr = sourceClient->GetMixFormat(&sourceFormat.value);
-        if (SUCCEEDED(hr) && !detectStereoEncoding(sourceFormat.value, sourceEncoding)) {
+        if (SUCCEEDED(hr) && !detectSourceFormat(sourceFormat.value, sourceInfo)) {
             hr = AUDCLNT_E_UNSUPPORTED_FORMAT;
         }
         if (SUCCEEDED(hr)) {
@@ -334,11 +342,17 @@ struct WasapiRelay::Impl {
         if (SUCCEEDED(hr)) hr = destinationClient->GetBufferSize(&destinationBufferFrames);
 
         ApoProcessorBridge bridge;
-        if (SUCCEEDED(hr) && config.processInRelay) {
-            if (!bridge.prepare(static_cast<float>(sourceFormat.value->nSamplesPerSec), 2)) {
-                hr = AUDCLNT_E_UNSUPPORTED_FORMAT;
-            } else {
+        if (SUCCEEDED(hr) && !bridge.prepare(
+                static_cast<float>(sourceFormat.value->nSamplesPerSec), sourceInfo.channels)) {
+            hr = AUDCLNT_E_UNSUPPORTED_FORMAT;
+        }
+        if (SUCCEEDED(hr)) {
+            if (config.processInRelay) {
                 applyPendingControlIfAvailable(bridge);
+            } else {
+                ApoControlState bypass{};
+                bypass.processor.bypass = true;
+                bridge.applyControlState(bypass);
             }
         }
 
@@ -356,7 +370,9 @@ struct WasapiRelay::Impl {
             static_cast<std::size_t>(sourceFormat.value->nSamplesPerSec * 0.060),
             static_cast<std::size_t>(destinationBufferFrames) * 4);
         StereoRingBuffer ring(ringFrames);
-        std::vector<float> captureScratch(static_cast<std::size_t>(sourceBufferFrames) * 2, 0.0f);
+        std::vector<float> captureScratch(
+            static_cast<std::size_t>(sourceBufferFrames) * sourceInfo.channels, 0.0f);
+        std::vector<float> stereoScratch(static_cast<std::size_t>(sourceBufferFrames) * 2, 0.0f);
 
         BYTE* initialBuffer = nullptr;
         if (SUCCEEDED(renderClient->GetBuffer(destinationBufferFrames, &initialBuffer))) {
@@ -382,7 +398,6 @@ struct WasapiRelay::Impl {
             targetBufferedFrames]() mutable {
             const HRESULT clockCom = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
             if (FAILED(clockCom)) return;
-
             ComPtr<IAudioClockAdjustment> adjustment;
             const HRESULT serviceResult = clockClient->GetService(
                 IID_PPV_ARGS(adjustment.GetAddressOf()));
@@ -394,9 +409,7 @@ struct WasapiRelay::Impl {
                         bufferedFrames.load(std::memory_order_relaxed));
                     const float adjustedRate = controller.update(buffered);
                     if (SUCCEEDED(adjustment->SetSampleRate(adjustedRate))) {
-                        clockCorrectionPpm.store(
-                            controller.correctionPpm(),
-                            std::memory_order_relaxed);
+                        clockCorrectionPpm.store(controller.correctionPpm(), std::memory_order_relaxed);
                     }
                 }
                 adjustment->SetSampleRate(nominalSampleRate);
@@ -429,24 +442,24 @@ struct WasapiRelay::Impl {
                     DWORD flags = 0;
                     UINT32 frames = 0;
                     if (FAILED(captureClient->GetBuffer(&rawData, &frames, &flags, nullptr, nullptr))) break;
-                    const std::size_t sampleCount = static_cast<std::size_t>(frames) * 2;
-                    if (sampleCount > captureScratch.size()) {
+                    const std::size_t inputSamples = static_cast<std::size_t>(frames) * sourceInfo.channels;
+                    if (inputSamples > captureScratch.size() ||
+                        static_cast<std::size_t>(frames) * 2 > stereoScratch.size()) {
                         captureClient->ReleaseBuffer(frames);
                         overruns.fetch_add(1, std::memory_order_relaxed);
                         break;
                     }
                     if ((flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0 || !rawData) {
-                        std::fill_n(captureScratch.data(), sampleCount, 0.0f);
+                        std::fill_n(captureScratch.data(), inputSamples, 0.0f);
                     } else {
-                        decodeStereoSamples(rawData, frames, sourceEncoding, captureScratch.data());
+                        decodeInterleavedSamples(
+                            rawData, frames, sourceInfo.channels, sourceInfo.encoding, captureScratch.data());
                     }
                     captureClient->ReleaseBuffer(frames);
 
-                    if (config.processInRelay) {
-                        applyPendingControlIfAvailable(bridge);
-                        bridge.process(captureScratch.data(), frames);
-                    }
-                    if (ring.push(captureScratch.data(), frames)) {
+                    if (config.processInRelay) applyPendingControlIfAvailable(bridge);
+                    bridge.processToStereo(captureScratch.data(), stereoScratch.data(), frames);
+                    if (ring.push(stereoScratch.data(), frames)) {
                         overruns.fetch_add(1, std::memory_order_relaxed);
                     }
                     bufferedFrames.store(ring.sizeFrames(), std::memory_order_relaxed);
