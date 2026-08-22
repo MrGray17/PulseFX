@@ -4,6 +4,7 @@
 #include "pulsefx/Processor.h"
 #include <array>
 #include <cstddef>
+#include <cstdint>
 
 namespace pulsefx::windows {
 
@@ -12,6 +13,13 @@ struct ApoControlState {
     std::array<float, Equalizer::kFrequencies.size()> eqDb{};
     HeadphoneProfile headphoneProfile{};
     bool headphoneCorrectionEnabled{false};
+
+    // Optional precomputed stereo HRTF. Calibration/fitting happens outside the
+    // audio worker; the bridge only installs a new fixed-size profile when its
+    // monotonically changing revision advances. Revision 0 means "use the
+    // engine's current/default profile".
+    HrtfProfile spatialProfile{};
+    std::uint64_t spatialProfileRevision{0};
 };
 
 // Portable seam between the Windows audio host and DSP engine. Stereo input is

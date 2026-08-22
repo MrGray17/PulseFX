@@ -9,6 +9,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import audio_lab  # noqa: E402
+from test_boom_characterize import BoomCharacterizeTests  # noqa: E402,F401
+from test_boom_probe import BoomProbeTests  # noqa: E402,F401
 
 
 class AudioLabTests(unittest.TestCase):

@@ -1,18 +1,43 @@
+import { ProcessingModeCoordinator } from './signatureMode.js';
+
 const desktop = typeof window !== 'undefined' ? window.pulsefx : undefined;
+const processingMode = new ProcessingModeCoordinator();
 
 export const pulsefxApi = {
   available: Boolean(desktop),
   async command(name, ...args) {
     if (!desktop) return { ok: false, type: 'offline', error: 'Native PulseFX host is available only in the desktop app.' };
-    return desktop.command(name, ...args);
+    const result = await desktop.command(name, ...args);
+    const startupMode = processingMode.observeCommand(name, args);
+    if (startupMode) {
+      const modeResult = await desktop.command('mode', startupMode);
+      if (modeResult?.ok === false) return modeResult;
+    }
+    return result;
   },
   async loadSettings() {
-    if (!desktop) return {};
-    return desktop.loadSettings();
+    if (!desktop) return processingMode.restore({});
+    const saved = await desktop.loadSettings();
+    return processingMode.restore(saved ?? {});
   },
   async saveSettings(settings) {
     if (!desktop) return false;
-    return desktop.saveSettings(settings);
+    return desktop.saveSettings(processingMode.savedSettings(settings));
+  },
+  getProcessingMode() {
+    return processingMode.mode;
+  },
+  onProcessingMode(callback) {
+    return processingMode.subscribe(callback);
+  },
+  async setProcessingMode(mode) {
+    if (!desktop) return { ok: false, type: 'offline', error: 'Native PulseFX host is available only in the desktop app.' };
+    if (mode !== 'signature' && mode !== 'manual') {
+      return { ok: false, type: 'error', error: 'Unsupported processing mode.' };
+    }
+    const result = await desktop.command('mode', mode);
+    if (result?.ok !== false) processingMode.observeCommand('mode', [mode]);
+    return result;
   },
   async listHeadphones() {
     if (!desktop) return { revision: '', models: [] };
