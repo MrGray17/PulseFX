@@ -2,6 +2,7 @@
 #include "Ambience.h"
 #include "BassEnhancer.h"
 #include "ClarityEnhancer.h"
+#include "DryWetTransition.h"
 #include "Dynamics.h"
 #include "Equalizer.h"
 #include "FidelityEnhancer.h"
@@ -12,6 +13,7 @@
 #include "SpatialSurround.h"
 #include "StereoEnhancer.h"
 #include "VirtualBassEnhancer.h"
+#include <array>
 #include <cstddef>
 
 namespace pulsefx {
@@ -35,6 +37,8 @@ struct ProcessorParameters {
 
 class Processor {
 public:
+    static constexpr std::size_t kProcessChunkFrames = 2048;
+
     void prepare(float sampleRate) noexcept;
     void reset() noexcept;
     void setParameters(const ProcessorParameters& parameters) noexcept;
@@ -50,6 +54,7 @@ public:
     const Limiter& limiter() const noexcept { return limiter_; }
     float headroomStress() const noexcept { return headroomStress_; }
     float headroomEnhancementBlend() const noexcept;
+    float masterWetMix() const noexcept { return dryWet_.wetMix(); }
     std::size_t latencySamples() const noexcept;
     void processInterleaved(float* samples, std::size_t frames, std::size_t channels) noexcept;
 
@@ -74,6 +79,10 @@ private:
     Ambience ambience_{};
     StereoEnhancer stereo_{};
     Limiter limiter_{};
+    DryWetTransition dryWet_{};
+    std::array<float, kProcessChunkFrames> dryScratchLeft_{};
+    std::array<float, kProcessChunkFrames> dryScratchRight_{};
+    std::array<float, kProcessChunkFrames> wetMixScratch_{};
 };
 
 } // namespace pulsefx

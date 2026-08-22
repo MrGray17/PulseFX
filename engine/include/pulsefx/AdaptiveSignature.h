@@ -37,6 +37,11 @@ struct SignatureInputs {
     // enhancement chain is consuming too much headroom and should back off.
     float limiterStress{0.0f};
 
+    // User preference, bounded by policy. 1 = reference Signature tuning;
+    // values below/above 1 make optional enhancement subtler/more expansive
+    // without changing headphone correction or escaping limiter/headroom rules.
+    float strength{1.0f};
+
     bool lowLatency{false};
 };
 

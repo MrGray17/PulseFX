@@ -1,10 +1,18 @@
 #include "PulseFxApoBridge.h"
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 
 namespace pulsefx::windows {
 namespace {
+
+std::atomic<std::uint32_t> gSampleRate{0};
+std::atomic<std::uint32_t> gInputChannels{0};
+std::atomic<std::uint32_t> gProcessorLatencyFrames{0};
+std::atomic<float> gLimiterGainReductionDb{0.0f};
+std::atomic<float> gHeadroomStress{0.0f};
+std::atomic<float> gMasterWetMix{0.0f};
 
 bool sameCorrectionBand(const CorrectionBand& a, const CorrectionBand& b) noexcept {
     return a.frequency == b.frequency &&
@@ -29,13 +37,20 @@ bool ApoProcessorBridge::prepare(float sampleRate, std::size_t inputChannels) no
         (inputChannels != 2 && inputChannels != 6 && inputChannels != 8)) {
         prepared_ = false;
         inputChannels_ = 0;
+        sampleRate_ = 0.0f;
+        gSampleRate.store(0, std::memory_order_relaxed);
+        gInputChannels.store(0, std::memory_order_relaxed);
         return false;
     }
+    sampleRate_ = sampleRate;
     inputChannels_ = inputChannels;
     processor_.prepare(sampleRate);
     if (!multichannel_.prepare(sampleRate, inputChannels_)) {
         prepared_ = false;
         inputChannels_ = 0;
+        sampleRate_ = 0.0f;
+        gSampleRate.store(0, std::memory_order_relaxed);
+        gInputChannels.store(0, std::memory_order_relaxed);
         return false;
     }
 
@@ -46,6 +61,7 @@ bool ApoProcessorBridge::prepare(float sampleRate, std::size_t inputChannels) no
     control_ = ApoControlState{};
     prepared_ = true;
     applyControlState(pending);
+    publishTelemetry();
     return true;
 }
 
@@ -53,6 +69,7 @@ void ApoProcessorBridge::reset() noexcept {
     if (!prepared_) return;
     multichannel_.reset();
     processor_.reset();
+    publishTelemetry();
 }
 
 void ApoProcessorBridge::applyControlState(const ApoControlState& state) noexcept {
@@ -106,11 +123,41 @@ void ApoProcessorBridge::applyControlState(const ApoControlState& state) noexcep
     if (state.headphoneCorrectionEnabled != previous.headphoneCorrectionEnabled) {
         processor_.headphoneCorrection().setEnabled(state.headphoneCorrectionEnabled);
     }
+    publishTelemetry();
+}
+
+void ApoProcessorBridge::publishTelemetry() noexcept {
+    const auto latency = processor_.latencySamples();
+    gSampleRate.store(
+        static_cast<std::uint32_t>(std::clamp(sampleRate_, 0.0f, 384000.0f)),
+        std::memory_order_relaxed);
+    gInputChannels.store(static_cast<std::uint32_t>(inputChannels_), std::memory_order_relaxed);
+    gProcessorLatencyFrames.store(
+        static_cast<std::uint32_t>(std::min<std::size_t>(latency, 0xffffffffu)),
+        std::memory_order_relaxed);
+    const float reduction = processor_.limiter().gainReductionDb();
+    const float stress = processor_.headroomStress();
+    const float wet = processor_.masterWetMix();
+    gLimiterGainReductionDb.store(std::isfinite(reduction) ? reduction : 0.0f, std::memory_order_relaxed);
+    gHeadroomStress.store(std::isfinite(stress) ? stress : 0.0f, std::memory_order_relaxed);
+    gMasterWetMix.store(std::isfinite(wet) ? wet : 0.0f, std::memory_order_relaxed);
+}
+
+BridgeTelemetrySnapshot ApoProcessorBridge::telemetry() noexcept {
+    return {
+        gSampleRate.load(std::memory_order_relaxed),
+        gInputChannels.load(std::memory_order_relaxed),
+        gProcessorLatencyFrames.load(std::memory_order_relaxed),
+        gLimiterGainReductionDb.load(std::memory_order_relaxed),
+        gHeadroomStress.load(std::memory_order_relaxed),
+        gMasterWetMix.load(std::memory_order_relaxed),
+    };
 }
 
 void ApoProcessorBridge::process(float* interleavedStereo, std::size_t frames) noexcept {
     if (!prepared_ || inputChannels_ != 2 || !interleavedStereo || frames == 0) return;
     processor_.processInterleaved(interleavedStereo, frames, 2);
+    publishTelemetry();
 }
 
 void ApoProcessorBridge::processToStereo(
@@ -133,6 +180,7 @@ void ApoProcessorBridge::processToStereo(
             frames);
     }
     processor_.processInterleaved(interleavedStereoOutput, frames, 2);
+    publishTelemetry();
 }
 
 } // namespace pulsefx::windows

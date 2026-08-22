@@ -1,4 +1,5 @@
 #include "pulsefx/SignatureSpatialProfileBank.h"
+#include "pulsefx/SpatialCalibration.h"
 #include "pulsefx/SpatialProfileTuning.h"
 #include "pulsefx/SpatialSurround.h"
 #include <cassert>
@@ -73,6 +74,37 @@ void testInvalidTuningFallsBackAndClamps() {
     assert(near(safe.wetTrimDb, 0.0f));
 }
 
+void testCalibrationCompositionIsBounded() {
+    pulsefx::SpatialProfileTuning signature{1.08f, 1.03f, 0.92f, -0.6f};
+    pulsefx::SpatialProfileTuning neutral{};
+    const auto same = pulsefx::composeSpatialProfileTuning(signature, neutral);
+    assert(near(same.itdScale, signature.itdScale));
+    assert(near(same.ipsilateralGain, signature.ipsilateralGain));
+    assert(near(same.contralateralGain, signature.contralateralGain));
+    assert(near(same.wetTrimDb, signature.wetTrimDb));
+
+    pulsefx::SpatialProfileTuning calibration{1.10f, 1.05f, 0.88f, -0.7f};
+    const auto combined = pulsefx::composeSpatialProfileTuning(signature, calibration);
+    assert(combined.itdScale > signature.itdScale);
+    assert(combined.contralateralGain < signature.contralateralGain);
+    assert(combined.wetTrimDb < signature.wetTrimDb);
+
+    pulsefx::SpatialProfileTuning hostile{};
+    hostile.itdScale = std::numeric_limits<float>::infinity();
+    hostile.ipsilateralGain = -100.0f;
+    hostile.contralateralGain = 100.0f;
+    hostile.wetTrimDb = std::numeric_limits<float>::quiet_NaN();
+    const auto safe = pulsefx::composeSpatialProfileTuning(hostile, hostile);
+    assert(std::isfinite(safe.itdScale));
+    assert(std::isfinite(safe.ipsilateralGain));
+    assert(std::isfinite(safe.contralateralGain));
+    assert(std::isfinite(safe.wetTrimDb));
+    assert(safe.itdScale >= 0.75f && safe.itdScale <= 1.40f);
+    assert(safe.ipsilateralGain >= 0.65f && safe.ipsilateralGain <= 1.25f);
+    assert(safe.contralateralGain >= 0.45f && safe.contralateralGain <= 1.35f);
+    assert(safe.wetTrimDb >= -6.0f && safe.wetTrimDb <= 3.0f);
+}
+
 void testNonFiniteHrirSamplesCannotEscape() {
     auto base = pulsefx::SpatialSurround::makeDefaultProfile(48000.0f);
     base.leftToLeft[0] = std::numeric_limits<float>::quiet_NaN();
@@ -112,8 +144,6 @@ void testSignatureProfileBankUsesExactRateAndStableRevisions() {
     assert(!bank.update(std::numeric_limits<float>::quiet_NaN(), {}));
     assert(!bank.valid());
 
-    // Neutral Signature tuning must be mathematically identical to the manual
-    // fallback at the exact stream rate, not a hard-coded 48 kHz approximation.
     assert(bank.update(44100.0f, {}));
     assert(bank.valid());
     assert(near(bank.sampleRate(), 44100.0f));
@@ -141,20 +171,31 @@ void testSignatureProfileBankUsesExactRateAndStableRevisions() {
     const auto base48 = pulsefx::SpatialSurround::makeDefaultProfile(48000.0f);
     assert(sameProfile(bank.manualProfile(), base48));
     assert(!sameProfile(bank.signatureProfile(), bank.manualProfile()));
-    assert(firstMeaningfulTap(bank.signatureProfile().leftToRight, bank.signatureProfile().taps) >=
-        firstMeaningfulTap(bank.manualProfile().leftToRight, bank.manualProfile().taps));
+
+    // A listener calibration lives underneath both modes. With neutral adaptive
+    // tuning, calibrated Signature and calibrated Manual are identical. With an
+    // expansive Signature tuning, Signature then builds on top of calibration.
+    pulsefx::SpatialProfileTuning calibration{};
+    calibration.itdScale = 1.06f;
+    calibration.ipsilateralGain = 1.03f;
+    calibration.contralateralGain = 0.90f;
+    calibration.wetTrimDb = -0.4f;
+    assert(bank.update(48000.0f, {}, calibration));
+    assert(!sameProfile(bank.manualProfile(), base48));
+    assert(sameProfile(bank.signatureProfile(), bank.manualProfile()));
+    const auto calibratedManual = bank.manualProfile();
+    assert(bank.update(48000.0f, expansive, calibration));
+    assert(sameProfile(bank.manualProfile(), calibratedManual));
+    assert(!sameProfile(bank.signatureProfile(), bank.manualProfile()));
 
     const auto cross48 = firstMeaningfulTap(bank.manualProfile().leftToRight, bank.manualProfile().taps);
-    assert(bank.update(96000.0f, expansive));
-    const auto base96 = pulsefx::SpatialSurround::makeDefaultProfile(96000.0f);
-    assert(sameProfile(bank.manualProfile(), base96));
+    assert(bank.update(96000.0f, expansive, calibration));
     const auto cross96 = firstMeaningfulTap(bank.manualProfile().leftToRight, bank.manualProfile().taps);
     assert(cross96 > cross48);
 
-    // Invalid updates fail open and preserve the last valid published profiles.
     const auto stableManualRevision = bank.manualRevision();
     const auto stableSignatureRevision = bank.signatureRevision();
-    assert(!bank.update(1000.0f, expansive));
+    assert(!bank.update(1000.0f, expansive, calibration));
     assert(bank.manualRevision() == stableManualRevision);
     assert(bank.signatureRevision() == stableSignatureRevision);
     assert(near(bank.sampleRate(), 96000.0f));
@@ -167,6 +208,7 @@ int main() {
     testItdScaleMovesContralateralDelay();
     testSymmetryIsPreserved();
     testInvalidTuningFallsBackAndClamps();
+    testCalibrationCompositionIsBounded();
     testNonFiniteHrirSamplesCannotEscape();
     testPathologicalProfileGetsEnergyCapped();
     testSignatureProfileBankUsesExactRateAndStableRevisions();

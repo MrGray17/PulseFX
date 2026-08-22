@@ -5,6 +5,7 @@
 #include "HeadphoneProfileCommand.h"
 #include "HostProtocol.h"
 #include "../relay/WasapiRelay.h"
+#include "pulsefx/ScenePolicy.h"
 #include "pulsefx/SignatureControls.h"
 #include "pulsefx/SignatureDeviceAnalysis.h"
 #include "pulsefx/SignatureSpatialProfileBank.h"
@@ -19,6 +20,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace pulsefx::windows {
 namespace {
@@ -41,6 +43,26 @@ bool parseUint32(const std::string& value, std::uint32_t& result) {
     }
 }
 
+bool parseContentClass(const std::string& value, ContentClass& result) noexcept {
+    if (value == "general") { result = ContentClass::General; return true; }
+    if (value == "music") { result = ContentClass::Music; return true; }
+    if (value == "movie") { result = ContentClass::Movie; return true; }
+    if (value == "game") { result = ContentClass::Game; return true; }
+    if (value == "voice") { result = ContentClass::Voice; return true; }
+    return false;
+}
+
+const char* contentClassName(ContentClass content) noexcept {
+    switch (content) {
+        case ContentClass::Music: return "music";
+        case ContentClass::Movie: return "movie";
+        case ContentClass::Game: return "game";
+        case ContentClass::Voice: return "voice";
+        case ContentClass::General: break;
+    }
+    return "general";
+}
+
 std::string quoted(const std::string& value) {
     return "\"" + jsonEscape(value) + "\"";
 }
@@ -61,6 +83,15 @@ const char* knowledgeName(DeviceKnowledge knowledge) noexcept {
         case DeviceKnowledge::Unknown: break;
     }
     return "unknown";
+}
+
+bool sameSceneSelection(const SceneSelection& a, const SceneSelection& b) noexcept {
+    return a.matched == b.matched &&
+        a.processKey == b.processKey &&
+        a.processId == b.processId &&
+        a.content == b.content &&
+        a.lowLatency == b.lowLatency &&
+        a.priority == b.priority;
 }
 
 class PulseFxHost {
@@ -106,6 +137,14 @@ public:
             return ackJson("quit");
         }
         if (command.name == "mode") return handleModeLocked(command);
+        if (command.name == "content") return handleContentLocked(command);
+        if (command.name == "low_latency") return handleLowLatencyLocked(command);
+        if (command.name == "signature_strength") return handleSignatureStrengthLocked(command);
+        if (command.name == "scene_enable") return handleSceneEnableLocked(command);
+        if (command.name == "scene_set") return handleSceneSetLocked(command);
+        if (command.name == "scene_remove") return handleSceneRemoveLocked(command);
+        if (command.name == "scene_clear") return handleSceneClearLocked(command);
+        if (command.name == "spatial_calibration") return handleSpatialCalibrationLocked(command);
         if (command.name == "output") return handleOutputLocked(command);
         if (command.name == "enabled") return handleBoolControlLocked(command, "enabled");
         if (command.name == "night") return handleBoolControlLocked(command, "night");
@@ -138,11 +177,18 @@ private:
         control_.spatialProfileRevision = 0;
     }
 
+    SpatialProfileTuning activeCalibrationLocked() const noexcept {
+        return calibrationEnabled_ ? calibrationTuning_ : SpatialProfileTuning{};
+    }
+
     void syncSpatialProfilesLocked(
         std::uint32_t sampleRate,
         const SpatialProfileTuning& signatureTuning) {
         if (sampleRate == 0) return;
-        spatialProfiles_.update(static_cast<float>(sampleRate), signatureTuning);
+        spatialProfiles_.update(
+            static_cast<float>(sampleRate),
+            signatureTuning,
+            activeCalibrationLocked());
         if (!spatialProfiles_.valid() ||
             static_cast<std::uint32_t>(std::lround(spatialProfiles_.sampleRate())) != sampleRate) return;
 
@@ -152,9 +198,23 @@ private:
     }
 
     std::uint32_t activeSourceSampleRateLocked() const noexcept {
-        if (sourceId_.empty()) return 0;
+        const auto telemetry = ApoProcessorBridge::telemetry();
+        if (telemetry.sampleRate != 0) return telemetry.sampleRate;
+        if (sourceId_.empty()) return publishedSpatialSampleRate_;
         const auto resolved = renderDeviceSampleRate(sourceId_);
         return resolved != 0 ? resolved : publishedSpatialSampleRate_;
+    }
+
+    ContentClass effectiveContentLocked() const noexcept {
+        return sceneAutomationEnabled_ && activeScene_.matched
+            ? activeScene_.content
+            : defaultContent_;
+    }
+
+    bool effectiveLowLatencyLocked() const noexcept {
+        return sceneAutomationEnabled_ && activeScene_.matched
+            ? activeScene_.lowLatency
+            : defaultLowLatency_;
     }
 
     void applySignatureLocked(
@@ -164,8 +224,10 @@ private:
         SignatureInputs inputs = makeSignatureInputsFromHeadphoneProfile(
             manualControl_.headphoneProfile,
             endpointVolume);
-        inputs.content = ContentClass::General;
-        inputs.lowLatency = false;
+        if (calibrationEnabled_) inputs.knowledge = DeviceKnowledge::Personalized;
+        inputs.content = effectiveContentLocked();
+        inputs.lowLatency = effectiveLowLatencyLocked();
+        inputs.strength = signatureStrength_;
 
         const auto compiled = compileSignatureControls(inputs, manualControl_.processor);
         syncSpatialProfilesLocked(sampleRate, compiled.spatial);
@@ -179,8 +241,6 @@ private:
             next.spatialProfile = spatialProfiles_.signatureProfile();
             next.spatialProfileRevision = spatialProfiles_.signatureRevision();
         } else {
-            // Never publish a stale profile for a stream rate we could not
-            // resolve. A fresh bridge then keeps its own rate-correct default.
             next.spatialProfileRevision = 0;
         }
         control_ = next;
@@ -199,6 +259,33 @@ private:
         applySignatureLocked(volume, sampleRate, true);
     }
 
+    void refreshSceneLocked() {
+        SceneSelection next{};
+        if (sceneAutomationEnabled_ && !sceneRules_.empty() && !sourceId_.empty()) {
+            const auto sessions = enumerateAudioSessions(sourceId_);
+            std::vector<SceneSession> candidates;
+            candidates.reserve(sessions.size());
+            for (const auto& session : sessions) {
+                candidates.push_back({
+                    utf8FromWide(session.processName),
+                    session.processId,
+                    session.active,
+                    session.muted,
+                    session.volume,
+                });
+            }
+            next = chooseScene(sceneRules_, candidates);
+        }
+        if (sameSceneSelection(next, activeScene_)) return;
+        activeScene_ = next;
+        if (mode_ == ProcessingMode::Signature) {
+            const float volume = destinationId_.empty()
+                ? lastSignatureEndpointVolume_
+                : endpointVolumeScalar(destinationId_, lastSignatureEndpointVolume_);
+            applySignatureLocked(volume, activeSourceSampleRateLocked(), true);
+        }
+    }
+
     bool ensureRelayLocked() {
         const std::wstring nextSource = findPulseFxOutputId();
         if (nextSource.empty()) {
@@ -210,13 +297,6 @@ private:
             return false;
         }
 
-        // In Auto mode, follow a real Windows physical default while one
-        // exists. Once PulseFX Output itself becomes the Windows default there
-        // is no longer a physical endpoint carrying the default flag, so keep
-        // the already-working physical sink as the temporary fallback instead
-        // of jumping to whichever endpoint happens to enumerate first. If that
-        // sink disappears, choosePhysicalOutputId() still falls through to the
-        // remaining available physical device.
         std::wstring routingPreference = preferredDestinationId_;
         if (routingPreference.empty() && !destinationId_.empty() && defaultRenderDeviceId() == nextSource) {
             routingPreference = destinationId_;
@@ -237,12 +317,7 @@ private:
 
         const std::uint32_t nextSampleRate = renderDeviceSampleRate(nextSource);
         relay_.stop();
-        if (nextSampleRate == 0) {
-            // A new relay must never inherit an HRTF designed for an old stream
-            // rate. Revision zero lets the freshly prepared bridge use its own
-            // exact-rate default until the control thread can resolve the mix.
-            clearSpatialPublicationLocked();
-        }
+        if (nextSampleRate == 0) clearSpatialPublicationLocked();
 
         if (mode_ == ProcessingMode::Signature) {
             applySignatureLocked(
@@ -277,9 +352,10 @@ private:
             try {
                 std::lock_guard<std::mutex> lock(mutex_);
                 ensureRelayLocked();
+                refreshSceneLocked();
             } catch (...) {
                 // The next watchdog pass retries. Never terminate the host from
-                // an environmental device-enumeration failure.
+                // an environmental device/session-enumeration failure.
             }
         }
     }
@@ -303,6 +379,125 @@ private:
         return errorJson("mode expects signature or manual");
     }
 
+    std::string handleContentLocked(const HostCommand& command) {
+        if (command.args.size() != 1) return errorJson("content expects general, music, movie, game, or voice");
+        ContentClass content{};
+        if (!parseContentClass(command.args[0], content)) return errorJson("invalid content class");
+        defaultContent_ = content;
+        if (mode_ == ProcessingMode::Signature && !(sceneAutomationEnabled_ && activeScene_.matched)) {
+            applySignatureLocked(lastSignatureEndpointVolume_, activeSourceSampleRateLocked(), true);
+        }
+        return ackJson("content");
+    }
+
+    std::string handleLowLatencyLocked(const HostCommand& command) {
+        if (command.args.size() != 1) return errorJson("low_latency expects one boolean");
+        bool enabled = false;
+        if (!parseBool(command.args[0], enabled)) return errorJson("invalid low_latency value");
+        defaultLowLatency_ = enabled;
+        if (mode_ == ProcessingMode::Signature && !(sceneAutomationEnabled_ && activeScene_.matched)) {
+            applySignatureLocked(lastSignatureEndpointVolume_, activeSourceSampleRateLocked(), true);
+        }
+        return ackJson("low_latency");
+    }
+
+    std::string handleSignatureStrengthLocked(const HostCommand& command) {
+        if (command.args.size() != 1) return errorJson("signature_strength expects one value");
+        float value = 1.0f;
+        if (!parseFiniteFloat(command.args[0], value)) return errorJson("invalid Signature strength");
+        signatureStrength_ = std::clamp(value, 0.50f, 1.25f);
+        if (mode_ == ProcessingMode::Signature) {
+            applySignatureLocked(lastSignatureEndpointVolume_, activeSourceSampleRateLocked(), true);
+        }
+        return ackJson("signature_strength");
+    }
+
+    std::string handleSceneEnableLocked(const HostCommand& command) {
+        if (command.args.size() != 1) return errorJson("scene_enable expects one boolean");
+        bool enabled = false;
+        if (!parseBool(command.args[0], enabled)) return errorJson("invalid scene_enable value");
+        sceneAutomationEnabled_ = enabled;
+        refreshSceneLocked();
+        if (!enabled && mode_ == ProcessingMode::Signature) {
+            applySignatureLocked(lastSignatureEndpointVolume_, activeSourceSampleRateLocked(), true);
+        }
+        return ackJson("scene_enable");
+    }
+
+    std::string handleSceneSetLocked(const HostCommand& command) {
+        if (command.args.size() != 4) return errorJson("scene_set expects process, content, low_latency, priority");
+        const std::string processKey = normalizeSceneProcessKey(command.args[0]);
+        if (processKey.empty()) return errorJson("invalid scene process");
+        ContentClass content{};
+        if (!parseContentClass(command.args[1], content)) return errorJson("invalid scene content");
+        bool lowLatency = false;
+        if (!parseBool(command.args[2], lowLatency)) return errorJson("invalid scene low_latency");
+        std::uint32_t priority = 0;
+        if (!parseUint32(command.args[3], priority) || priority > 100) return errorJson("scene priority must be 0..100");
+
+        auto found = std::find_if(sceneRules_.begin(), sceneRules_.end(), [&](const SceneRule& rule) {
+            return normalizeSceneProcessKey(rule.processKey) == processKey;
+        });
+        SceneRule next{processKey, content, lowLatency, static_cast<int>(priority)};
+        if (found != sceneRules_.end()) *found = next;
+        else {
+            if (sceneRules_.size() >= 128) return errorJson("scene rule limit reached");
+            sceneRules_.push_back(std::move(next));
+        }
+        refreshSceneLocked();
+        return ackJson("scene_set");
+    }
+
+    std::string handleSceneRemoveLocked(const HostCommand& command) {
+        if (command.args.size() != 1) return errorJson("scene_remove expects one process");
+        const std::string processKey = normalizeSceneProcessKey(command.args[0]);
+        if (processKey.empty()) return errorJson("invalid scene process");
+        sceneRules_.erase(
+            std::remove_if(sceneRules_.begin(), sceneRules_.end(), [&](const SceneRule& rule) {
+                return normalizeSceneProcessKey(rule.processKey) == processKey;
+            }),
+            sceneRules_.end());
+        refreshSceneLocked();
+        return ackJson("scene_remove");
+    }
+
+    std::string handleSceneClearLocked(const HostCommand& command) {
+        if (!command.args.empty()) return errorJson("scene_clear expects no arguments");
+        sceneRules_.clear();
+        refreshSceneLocked();
+        return ackJson("scene_clear");
+    }
+
+    std::string handleSpatialCalibrationLocked(const HostCommand& command) {
+        if (command.args.size() != 5) {
+            return errorJson("spatial_calibration expects enabled, itd, ipsilateral, contralateral, trim_db");
+        }
+        bool enabled = false;
+        float itd = 1.0f;
+        float ipsilateral = 1.0f;
+        float contralateral = 1.0f;
+        float trimDb = 0.0f;
+        if (!parseBool(command.args[0], enabled) ||
+            !parseFiniteFloat(command.args[1], itd) ||
+            !parseFiniteFloat(command.args[2], ipsilateral) ||
+            !parseFiniteFloat(command.args[3], contralateral) ||
+            !parseFiniteFloat(command.args[4], trimDb)) {
+            return errorJson("invalid spatial calibration values");
+        }
+        calibrationEnabled_ = enabled;
+        calibrationTuning_ = sanitizeSpatialProfileTuning({itd, ipsilateral, contralateral, trimDb});
+
+        const auto sampleRate = activeSourceSampleRateLocked();
+        if (mode_ == ProcessingMode::Signature) {
+            applySignatureLocked(lastSignatureEndpointVolume_, sampleRate, true);
+        } else {
+            syncSpatialProfilesLocked(sampleRate, signaturePlan_.spatial);
+            control_ = manualControl_;
+            pushControlLocked();
+        }
+        return ackJson("spatial_calibration");
+    }
+
     std::string handleOutputLocked(const HostCommand& command) {
         if (command.args.size() != 1) return errorJson("output expects one device id or auto");
         const std::wstring previous = preferredDestinationId_;
@@ -316,6 +511,7 @@ private:
         }
         relay_.stop();
         ensureRelayLocked();
+        refreshSceneLocked();
         return statusJsonLocked();
     }
 
@@ -390,8 +586,6 @@ private:
     }
 
     std::string handleHeadphoneProfileLocked(const HostCommand& command) {
-        // Parse into a copy first. Malformed remote/profile data can never leave
-        // half of a new filter bank active on the realtime thread.
         ApoControlState next = manualControl_;
         std::string error;
         if (!applyHeadphoneProfileArgs(command.args, next, error)) return errorJson(error);
@@ -450,9 +644,11 @@ private:
             if (index) out << ',';
             const auto& session = sessions[index];
             out << "{\"pid\":" << session.processId
+                << ",\"processName\":" << quoted(utf8FromWide(session.processName))
                 << ",\"name\":" << quoted(utf8FromWide(session.name))
                 << ",\"volume\":" << session.volume
-                << ",\"muted\":" << (session.muted ? "true" : "false") << '}';
+                << ",\"muted\":" << (session.muted ? "true" : "false")
+                << ",\"active\":" << (session.active ? "true" : "false") << '}';
         }
         out << "]}";
         return out.str();
@@ -460,11 +656,19 @@ private:
 
     std::string statusJsonLocked() const {
         const RelayStats stats = relay_.stats();
+        const BridgeTelemetrySnapshot telemetry = ApoProcessorBridge::telemetry();
         const bool routingActive = !sourceId_.empty() && defaultRenderDeviceId() == sourceId_;
         std::string effectiveError = lastError_;
         if (effectiveError.empty() && relay_.running() && !routingActive) {
             effectiveError = "PulseFX Output is not the Windows default playback device; system audio may bypass processing";
         }
+
+        const float processorLatencyMs = telemetry.sampleRate > 0
+            ? 1000.0f * static_cast<float>(telemetry.processorLatencyFrames) / static_cast<float>(telemetry.sampleRate)
+            : 0.0f;
+        const float bufferedLatencyMs = telemetry.sampleRate > 0
+            ? 1000.0f * static_cast<float>(stats.bufferedFrames) / static_cast<float>(telemetry.sampleRate)
+            : 0.0f;
 
         std::ostringstream out;
         out << "{\"type\":\"status\",\"ok\":true"
@@ -477,6 +681,9 @@ private:
             << ",\"controls\":{"
             << "\"mode\":" << quoted(processingModeName(mode_)) << ','
             << "\"enabled\":" << (!control_.processor.bypass ? "true" : "false") << ','
+            << "\"content\":" << quoted(contentClassName(effectiveContentLocked())) << ','
+            << "\"lowLatency\":" << (effectiveLowLatencyLocked() ? "true" : "false") << ','
+            << "\"signatureStrength\":" << signatureStrength_ << ','
             << "\"pitchSemitones\":" << control_.processor.pitchSemitones << ','
             << "\"preampDb\":" << control_.processor.preampDb << ','
             << "\"bass\":" << control_.processor.bass << ','
@@ -496,6 +703,21 @@ private:
             << "\"spatialProfileRevision\":" << control_.spatialProfileRevision << ','
             << "\"itdScale\":" << signaturePlan_.spatial.itdScale << ','
             << "\"contralateralGain\":" << signaturePlan_.spatial.contralateralGain
+            << "},\"calibration\":{"
+            << "\"enabled\":" << (calibrationEnabled_ ? "true" : "false") << ','
+            << "\"itdScale\":" << calibrationTuning_.itdScale << ','
+            << "\"ipsilateralGain\":" << calibrationTuning_.ipsilateralGain << ','
+            << "\"contralateralGain\":" << calibrationTuning_.contralateralGain << ','
+            << "\"wetTrimDb\":" << calibrationTuning_.wetTrimDb
+            << "},\"scene\":{"
+            << "\"automationEnabled\":" << (sceneAutomationEnabled_ ? "true" : "false") << ','
+            << "\"matched\":" << (activeScene_.matched ? "true" : "false") << ','
+            << "\"processName\":" << quoted(activeScene_.processKey) << ','
+            << "\"pid\":" << activeScene_.processId << ','
+            << "\"content\":" << quoted(contentClassName(activeScene_.content)) << ','
+            << "\"lowLatency\":" << (activeScene_.lowLatency ? "true" : "false") << ','
+            << "\"priority\":" << activeScene_.priority << ','
+            << "\"ruleCount\":" << sceneRules_.size()
             << "},\"stats\":{"
             << "\"underruns\":" << stats.underruns << ','
             << "\"overruns\":" << stats.overruns << ','
@@ -503,7 +725,16 @@ private:
             << "\"renderedFrames\":" << stats.renderedFrames << ','
             << "\"bufferedFrames\":" << stats.bufferedFrames << ','
             << "\"controlRevision\":" << stats.controlRevision << ','
-            << "\"clockCorrectionPpm\":" << stats.clockCorrectionPpm
+            << "\"clockCorrectionPpm\":" << stats.clockCorrectionPpm << ','
+            << "\"sampleRate\":" << telemetry.sampleRate << ','
+            << "\"inputChannels\":" << telemetry.inputChannels << ','
+            << "\"processorLatencyFrames\":" << telemetry.processorLatencyFrames << ','
+            << "\"processorLatencyMs\":" << processorLatencyMs << ','
+            << "\"bufferedLatencyMs\":" << bufferedLatencyMs << ','
+            << "\"internalLatencyMs\":" << (processorLatencyMs + bufferedLatencyMs) << ','
+            << "\"limiterGainReductionDb\":" << telemetry.limiterGainReductionDb << ','
+            << "\"headroomStress\":" << telemetry.headroomStress << ','
+            << "\"masterWetMix\":" << telemetry.masterWetMix
             << "}}";
         return out.str();
     }
@@ -524,8 +755,16 @@ private:
     SignatureInputs signatureInputs_{};
     SignaturePlan signaturePlan_{};
     SignatureSpatialProfileBank spatialProfiles_{};
+    float signatureStrength_{1.0f};
     float lastSignatureEndpointVolume_{0.5f};
     std::uint32_t publishedSpatialSampleRate_{0};
+    ContentClass defaultContent_{ContentClass::General};
+    bool defaultLowLatency_{false};
+    bool sceneAutomationEnabled_{true};
+    std::vector<SceneRule> sceneRules_{};
+    SceneSelection activeScene_{};
+    bool calibrationEnabled_{false};
+    SpatialProfileTuning calibrationTuning_{};
     std::wstring sourceId_{};
     std::wstring destinationId_{};
     std::wstring preferredDestinationId_{};

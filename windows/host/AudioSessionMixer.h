@@ -10,9 +10,11 @@ namespace pulsefx::windows {
 
 struct AudioSessionInfo {
     std::uint32_t processId{0};
+    std::wstring processName;
     std::wstring name;
     float volume{1.0f};
     bool muted{false};
+    bool active{false};
 };
 
 std::vector<AudioSessionInfo> enumerateAudioSessions(const std::wstring& renderDeviceId);

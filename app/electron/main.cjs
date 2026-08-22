@@ -10,6 +10,8 @@ const radio = require('./radio.cjs');
 
 const allowedCommands = new Set([
   'ping', 'status', 'devices', 'apps', 'quit', 'output', 'enabled', 'night',
+  'mode', 'content', 'low_latency', 'signature_strength',
+  'scene_enable', 'scene_set', 'scene_remove', 'scene_clear', 'spatial_calibration',
   'headphone_enable', 'headphone_profile', 'preamp', 'bass', 'clarity', 'fidelity', 'spatial',
   'surround', 'ambience', 'dynamics', 'pitch', 'eq', 'app_volume', 'app_mute',
 ]);
