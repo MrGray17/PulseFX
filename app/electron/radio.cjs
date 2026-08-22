@@ -6,6 +6,7 @@ const DISCOVERY_NAME = '_api._tcp.radio-browser.info';
 const FALLBACK_SERVERS = ['de1.api.radio-browser.info'];
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_RESULTS = 80;
+const MAX_COUNTRIES = 250;
 
 function isPrivateIpv4(hostname) {
   const parts = hostname.split('.').map(Number);
@@ -97,6 +98,11 @@ function cleanText(value, maxLength = 200) {
   return String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, maxLength);
 }
 
+function normalizeCountryCode(value) {
+  const code = cleanText(value, 2).toUpperCase();
+  return /^[A-Z]{2}$/.test(code) ? code : '';
+}
+
 function sanitizeStation(station) {
   const streamUrl = cleanText(station?.url_resolved || station?.url, 4096);
   if (!isSafeStreamUrl(streamUrl)) return null;
@@ -111,7 +117,7 @@ function sanitizeStation(station) {
     streamUrl,
     favicon: isSafeStreamUrl(cleanText(station?.favicon, 4096)) ? cleanText(station.favicon, 4096) : '',
     country: cleanText(station?.country, 100),
-    countrycode: cleanText(station?.countrycode, 3).toUpperCase(),
+    countrycode: normalizeCountryCode(station?.countrycode),
     language: cleanText(station?.language, 120),
     tags: cleanText(station?.tags, 300),
     codec: cleanText(station?.codec, 20),
@@ -119,8 +125,19 @@ function sanitizeStation(station) {
   };
 }
 
-async function searchStations(query = '') {
+function sanitizeCountryCode(entry) {
+  const code = normalizeCountryCode(entry?.name);
+  if (!code) return null;
+  const stationcount = Number(entry?.stationcount);
+  return {
+    code,
+    stationcount: Number.isFinite(stationcount) && stationcount >= 0 ? Math.min(Math.trunc(stationcount), 1_000_000) : 0,
+  };
+}
+
+function stationSearchPath({ query = '', countryCode = '' } = {}) {
   const text = cleanText(query, 100);
+  const code = normalizeCountryCode(countryCode);
   const params = new URLSearchParams({
     hidebroken: 'true',
     limit: String(MAX_RESULTS),
@@ -128,9 +145,48 @@ async function searchStations(query = '') {
     reverse: 'true',
   });
   if (text) params.set('name', text);
-  const raw = await requestFromNetwork(`/json/stations/search?${params.toString()}`);
+  if (code) params.set('countrycode', code);
+  return `/json/stations/search?${params.toString()}`;
+}
+
+function stationBrowsePath(mode, countryCode = '') {
+  if (mode === 'popular') return `/json/stations/topvote/${MAX_RESULTS}?hidebroken=true`;
+  if (mode === 'local' || mode === 'country') {
+    const code = normalizeCountryCode(countryCode);
+    if (!code) throw new Error('a two-letter country code is required for this radio view');
+    return stationSearchPath({ countryCode: code });
+  }
+  throw new Error('unsupported radio browse mode');
+}
+
+function countryCodesPath() {
+  const params = new URLSearchParams({
+    hidebroken: 'true',
+    order: 'stationcount',
+    reverse: 'true',
+    limit: String(MAX_COUNTRIES),
+  });
+  return `/json/countrycodes?${params.toString()}`;
+}
+
+async function stationsFromPath(pathname) {
+  const raw = await requestFromNetwork(pathname);
   if (!Array.isArray(raw)) throw new Error('Radio Browser station response was not an array');
   return raw.map(sanitizeStation).filter(Boolean).slice(0, MAX_RESULTS);
+}
+
+async function searchStations(query = '') {
+  return stationsFromPath(stationSearchPath({ query }));
+}
+
+async function browseStations(mode, countryCode = '') {
+  return stationsFromPath(stationBrowsePath(mode, countryCode));
+}
+
+async function listCountryCodes() {
+  const raw = await requestFromNetwork(countryCodesPath());
+  if (!Array.isArray(raw)) throw new Error('Radio Browser country response was not an array');
+  return raw.map(sanitizeCountryCode).filter(Boolean).slice(0, MAX_COUNTRIES);
 }
 
 async function recordClick(stationuuid) {
@@ -146,9 +202,16 @@ async function recordClick(stationuuid) {
 }
 
 module.exports = {
+  browseStations,
+  countryCodesPath,
   discoverServers,
   isSafeStreamUrl,
+  listCountryCodes,
+  normalizeCountryCode,
+  recordClick,
+  sanitizeCountryCode,
   sanitizeStation,
   searchStations,
-  recordClick,
+  stationBrowsePath,
+  stationSearchPath,
 };
