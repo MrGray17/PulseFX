@@ -14,6 +14,7 @@ void Processor::prepare(float sampleRate) noexcept {
     equalizer_.prepare(sampleRate_);
     headphoneCorrection_.prepare(sampleRate_);
     bass_.prepare(sampleRate_);
+    virtualBass_.prepare(sampleRate_);
     fidelity_.prepare(sampleRate_);
     clarity_.prepare(sampleRate_);
     dynamics_.prepare(sampleRate_);
@@ -38,6 +39,8 @@ void Processor::setParameters(const ProcessorParameters& parameters) noexcept {
     ProcessorParameters next = parameters;
     next.preampDb = std::clamp(next.preampDb, -18.0f, 9.0f);
     next.bass = std::clamp(next.bass, 0.0f, 1.0f);
+    next.virtualBass = std::clamp(next.virtualBass, 0.0f, 1.0f);
+    next.bassCapability = std::clamp(next.bassCapability, 0.0f, 1.0f);
     next.clarity = std::clamp(next.clarity, 0.0f, 1.0f);
     next.fidelity = std::clamp(next.fidelity, 0.0f, 1.0f);
     next.space = std::clamp(next.space, 0.0f, 1.0f);
@@ -67,6 +70,8 @@ void Processor::setParameters(const ProcessorParameters& parameters) noexcept {
     // preserving the existing coefficient smoothing/state of unchanged stages.
     if (previous.preampDb != next.preampDb) preampGain_.setTarget(dbToLinear(next.preampDb));
     if (previous.bass != next.bass) bass_.setAmount(next.bass);
+    if (previous.virtualBass != next.virtualBass) virtualBass_.setAmount(next.virtualBass);
+    if (previous.bassCapability != next.bassCapability) virtualBass_.setBassCapability(next.bassCapability);
     if (previous.fidelity != next.fidelity) fidelity_.setAmount(next.fidelity);
     if (previous.clarity != next.clarity) clarity_.setAmount(next.clarity);
     if (previous.pitchSemitones != next.pitchSemitones) pitchShifter_.setSemitones(next.pitchSemitones);
@@ -82,6 +87,7 @@ void Processor::reset() noexcept {
     equalizer_.reset();
     headphoneCorrection_.reset();
     bass_.reset();
+    virtualBass_.reset();
     fidelity_.reset();
     clarity_.reset();
     dynamics_.reset();
@@ -111,6 +117,7 @@ void Processor::processInterleaved(float* samples, std::size_t frames, std::size
         equalizer_.processStereo(left, right);
         headphoneCorrection_.processStereo(left, right);
         bass_.processStereo(left, right);
+        virtualBass_.processStereo(left, right);
         fidelity_.processStereo(left, right);
         clarity_.processStereo(left, right);
         dynamics_.processStereo(left, right);
