@@ -20,6 +20,13 @@ export const pulsefxApi = {
     const saved = await desktop.loadSettings();
     return processingMode.restore(saved ?? {});
   },
+  // Raw read for isolated auxiliary UI surfaces. Unlike loadSettings(), this
+  // does not participate in the startup Signature/Manual migration transaction.
+  async peekSettings() {
+    if (!desktop) return {};
+    const saved = await desktop.loadSettings();
+    return saved && typeof saved === 'object' ? saved : {};
+  },
   async saveSettings(settings) {
     if (!desktop) return false;
     return desktop.saveSettings(processingMode.savedSettings(settings));

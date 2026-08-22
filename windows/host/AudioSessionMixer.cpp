@@ -110,18 +110,31 @@ std::vector<AudioSessionInfo> enumerateAudioSessions(const std::wstring& renderD
         BOOL muted = FALSE;
         simpleVolume->GetMasterVolume(&volume);
         simpleVolume->GetMute(&muted);
+        volume = std::clamp(volume, 0.0f, 1.0f);
+
+        AudioSessionState state = AudioSessionStateInactive;
+        control->GetState(&state);
 
         auto& info = grouped[pid];
+        const bool firstSession = info.processName.empty();
         info.processId = pid;
-        info.volume = std::clamp(volume, 0.0f, 1.0f);
-        info.muted = muted != FALSE;
+        if (firstSession) {
+            info.processName = processName(pid);
+            info.volume = volume;
+            info.muted = muted != FALSE;
+        } else {
+            info.volume = std::max(info.volume, volume);
+            info.muted = info.muted && muted != FALSE;
+        }
+        info.active = info.active || state == AudioSessionStateActive;
+
         if (info.name.empty()) {
             LPWSTR displayName = nullptr;
             if (SUCCEEDED(control->GetDisplayName(&displayName)) && displayName && *displayName) {
                 info.name = displayName;
             }
             if (displayName) CoTaskMemFree(displayName);
-            if (info.name.empty()) info.name = processName(pid);
+            if (info.name.empty()) info.name = info.processName;
         }
     }
 

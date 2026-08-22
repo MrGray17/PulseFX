@@ -3,6 +3,8 @@ const { allowedCommands, validateNativeCommand } = require('./nativeCommandPolic
 
 const rendererCommands = [
   'ping', 'status', 'devices', 'apps', 'quit', 'mode', 'output', 'enabled', 'night',
+  'content', 'low_latency', 'signature_strength',
+  'scene_enable', 'scene_set', 'scene_remove', 'scene_clear', 'spatial_calibration',
   'headphone_enable', 'headphone_profile', 'preamp', 'bass', 'clarity', 'fidelity', 'spatial',
   'surround', 'ambience', 'dynamics', 'pitch', 'eq', 'app_volume', 'app_mute',
 ];
@@ -18,5 +20,7 @@ assert.throws(() => validateNativeCommand('mode', [{ nope: true }]), /invalid co
 assert.throws(() => validateNativeCommand('mode', ['x'.repeat(4097)]), /command argument is too long/);
 assert.equal(validateNativeCommand('mode', ['signature']), true);
 assert.equal(validateNativeCommand('mode', ['manual']), true);
+assert.equal(validateNativeCommand('scene_set', ['spotify.exe', 'music', false, 60]), true);
+assert.equal(validateNativeCommand('spatial_calibration', [true, 1.02, 1, 0.95, -0.5]), true);
 
 console.log('PulseFX native command policy tests passed');

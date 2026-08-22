@@ -15,11 +15,16 @@ void expectFinite(const std::vector<float>& audio) {
 bool closeTo(float a, float b, float tolerance = 1.0e-5f) {
     return std::abs(a - b) <= tolerance;
 }
+
+void requireFiniteTelemetry(const pulsefx::windows::BridgeTelemetrySnapshot& telemetry) {
+    require(std::isfinite(telemetry.limiterGainReductionDb), "limiter telemetry was non-finite");
+    require(std::isfinite(telemetry.headroomStress), "headroom telemetry was non-finite");
+    require(std::isfinite(telemetry.masterWetMix), "master wet telemetry was non-finite");
+    require(telemetry.masterWetMix >= 0.0f && telemetry.masterWetMix <= 1.0f, "master wet telemetry escaped bounds");
+}
 }
 
 int main() {
-    // Restored settings may arrive before the audio device/format is prepared.
-    // Delta application must not optimize that first real application away.
     pulsefx::windows::ApoProcessorBridge restoredBridge;
     pulsefx::windows::ApoControlState restored{};
     restored.processor.preampDb = -2.5f;
@@ -39,24 +44,31 @@ int main() {
     require(!bridge.prepare(48000.0f, 5), "bridge accepted unsupported five-channel layout");
     require(bridge.prepare(48000.0f, 2), "bridge rejected supported stereo layout");
     require(bridge.latencyFrames() > 0, "bridge failed to expose DSP latency");
+    auto telemetry = pulsefx::windows::ApoProcessorBridge::telemetry();
+    require(telemetry.sampleRate == 48000, "telemetry sample rate was wrong");
+    require(telemetry.inputChannels == 2, "telemetry channel count was wrong");
+    require(telemetry.processorLatencyFrames == bridge.latencyFrames(), "telemetry DSP latency was wrong");
+    requireFiniteTelemetry(telemetry);
 
     pulsefx::windows::ApoControlState state{};
     state.processor.bass = 0.5f;
     state.processor.clarity = 0.3f;
     state.processor.space = 0.25f;
+    state.processor.adaptiveHeadroom = true;
     state.eqDb[17] = 2.0f;
     bridge.applyControlState(state);
-
-    // Re-applying an identical snapshot is a valid no-op and must not disturb
-    // processor state or make output non-finite.
     bridge.applyControlState(state);
     require(closeTo(bridge.processor().equalizer().bandGain(17), 2.0f), "identical control snapshot changed EQ state");
 
     std::vector<float> stereo(4096 * 2, 0.0f);
-    stereo[1000 * 2] = 0.8f;
-    stereo[1000 * 2 + 1] = -0.8f;
+    stereo[1000 * 2] = 1.5f;
+    stereo[1000 * 2 + 1] = -1.5f;
     bridge.process(stereo.data(), 4096);
     expectFinite(stereo);
+    telemetry = pulsefx::windows::ApoProcessorBridge::telemetry();
+    require(telemetry.sampleRate == 48000 && telemetry.inputChannels == 2, "stereo telemetry changed unexpectedly");
+    require(telemetry.processorLatencyFrames == bridge.latencyFrames(), "live telemetry latency drifted");
+    requireFiniteTelemetry(telemetry);
 
     // A precomputed personalized HRTF is revision-published into the stereo
     // bridge. The bridge must install/crossfade it without changing latency or
@@ -99,6 +111,9 @@ int main() {
     surround51[1000 * 6 + 4] = 0.7f;
     bridge.processToStereo(surround51.data(), downmixed51.data(), 4096);
     expectFinite(downmixed51);
+    telemetry = pulsefx::windows::ApoProcessorBridge::telemetry();
+    require(telemetry.inputChannels == 6, "5.1 telemetry channel count was wrong");
+    requireFiniteTelemetry(telemetry);
 
     require(bridge.prepare(48000.0f, 8), "bridge rejected supported 7.1 layout");
     bridge.applyControlState(state);
@@ -107,4 +122,7 @@ int main() {
     surround71[1000 * 8 + 6] = 0.7f;
     bridge.processToStereo(surround71.data(), downmixed71.data(), 4096);
     expectFinite(downmixed71);
+    telemetry = pulsefx::windows::ApoProcessorBridge::telemetry();
+    require(telemetry.inputChannels == 8, "7.1 telemetry channel count was wrong");
+    requireFiniteTelemetry(telemetry);
 }

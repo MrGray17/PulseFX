@@ -51,6 +51,7 @@ public:
     Limiter& limiter() noexcept { return limiter_; }
     const Limiter& limiter() const noexcept { return limiter_; }
     float headroomStress() const noexcept { return headroomStress_; }
+    float masterWetMix() const noexcept { return masterWet_.current(); }
     float headroomEnhancementBlend() const noexcept;
     std::size_t latencySamples() const noexcept;
     void processInterleaved(float* samples, std::size_t frames, std::size_t channels) noexcept;
