@@ -189,7 +189,7 @@ jobs:
       - name: Verify packaged host, setup helper, and driver
         shell: pwsh
         run: |
-          $host = Get-ChildItem -Path 'app/release' -Recurse -Filter 'pulsefx_audio_host.exe' |
+          $nativeHost = Get-ChildItem -Path 'app/release' -Recurse -Filter 'pulsefx_audio_host.exe' |
             Where-Object { $_.FullName -match '[\\/]resources[\\/]native[\\/]' } |
             Select-Object -First 1
           $helper = Get-ChildItem -Path 'app/release' -Recurse -Filter 'pulsefx_device_setup.exe' |
@@ -199,7 +199,7 @@ jobs:
             Where-Object { $_.FullName -match '[\\/]resources[\\/]driver[\\/]' } |
             Select-Object -First 1
           $installer = Get-ChildItem -Path 'app/release' -Filter 'PulseFX-Setup-*-${{ matrix.arch }}.exe' | Select-Object -First 1
-          if (-not $host) { throw 'Packaged native host is missing.' }
+          if (-not $nativeHost) { throw 'Packaged native host is missing.' }
           if (-not $helper) { throw 'Packaged virtual-device setup helper is missing.' }
           if (-not $driver) { throw 'Packaged virtual audio driver is missing.' }
           if (-not $installer) { throw 'Architecture-specific PulseFX installer was not produced.' }
