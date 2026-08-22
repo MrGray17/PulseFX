@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 
 namespace pulsefx {
@@ -16,7 +17,8 @@ public:
         taps_ = std::clamp<std::size_t>(taps, 1, kMaxTaps);
         coefficients_.fill(0.0f);
         for (std::size_t i = 0; i < taps_; ++i) {
-            coefficients_[i] = impulse ? impulse[i] : (i == 0 ? 1.0f : 0.0f);
+            const float value = impulse ? impulse[i] : (i == 0 ? 1.0f : 0.0f);
+            coefficients_[i] = std::isfinite(value) ? value : 0.0f;
         }
         reset();
     }
@@ -27,7 +29,7 @@ public:
     }
 
     float process(float input) noexcept {
-        history_[writeIndex_] = input;
+        history_[writeIndex_] = std::isfinite(input) ? input : 0.0f;
         float output = 0.0f;
         std::size_t index = writeIndex_;
         for (std::size_t tap = 0; tap < taps_; ++tap) {
@@ -35,7 +37,7 @@ public:
             index = index == 0 ? kMaxTaps - 1 : index - 1;
         }
         writeIndex_ = (writeIndex_ + 1) % kMaxTaps;
-        return output;
+        return std::isfinite(output) ? output : 0.0f;
     }
 
 private:

@@ -58,6 +58,38 @@ int main() {
     bridge.process(stereo.data(), 4096);
     expectFinite(stereo);
 
+    // A precomputed personalized HRTF is revision-published into the stereo
+    // bridge. The bridge must install/crossfade it without changing latency or
+    // producing non-finite samples. A second revision exercises live switching.
+    state = {};
+    state.processor.surround = 0.8f;
+    state.spatialProfile = pulsefx::SpatialSurround::makeDefaultProfile(48000.0f);
+    state.spatialProfileRevision = 1;
+    bridge.applyControlState(state);
+    const std::size_t latencyBeforeProfileSwap = bridge.latencyFrames();
+
+    std::vector<float> profileAudio(4096 * 2, 0.0f);
+    for (std::size_t frame = 0; frame < 4096; ++frame) {
+        const float sample = 0.12f * std::sin(2.0f * 3.14159265358979323846f * 997.0f
+            * static_cast<float>(frame) / 48000.0f);
+        profileAudio[frame * 2] = sample;
+        profileAudio[frame * 2 + 1] = sample * 0.35f;
+    }
+    bridge.process(profileAudio.data(), 4096);
+    expectFinite(profileAudio);
+
+    pulsefx::HrtfProfile quieterProfile = state.spatialProfile;
+    for (std::size_t index = 0; index < quieterProfile.taps; ++index) {
+        quieterProfile.leftToRight[index] *= 0.70f;
+        quieterProfile.rightToLeft[index] *= 0.70f;
+    }
+    state.spatialProfile = quieterProfile;
+    state.spatialProfileRevision = 2;
+    bridge.applyControlState(state);
+    bridge.process(profileAudio.data(), 4096);
+    expectFinite(profileAudio);
+    require(bridge.latencyFrames() == latencyBeforeProfileSwap, "HRTF profile swap changed declared DSP latency");
+
     require(bridge.prepare(48000.0f, 6), "bridge rejected supported 5.1 layout");
     state = {};
     state.processor.surround = 1.0f;

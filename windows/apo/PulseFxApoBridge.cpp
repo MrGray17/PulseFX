@@ -78,6 +78,17 @@ void ApoProcessorBridge::applyControlState(const ApoControlState& state) noexcep
     // smoothed state of every filter that did not actually move.
     processor_.setParameters(processorState);
 
+    // Stereo spatial calibration is precomputed on a non-realtime/control
+    // thread. The audio worker only sees a fixed-size HRTF plus a revision and
+    // starts the renderer's click-free bank crossfade. Multichannel uses its
+    // dedicated directional renderer and is intentionally not faked through a
+    // stereo calibration profile.
+    if (inputChannels_ == 2 &&
+        state.spatialProfileRevision != 0 &&
+        state.spatialProfileRevision != previous.spatialProfileRevision) {
+        processor_.spatialSurround().setProfile(state.spatialProfile);
+    }
+
     // EQ updates used to rebuild all 31 bands for every UI command, including
     // unrelated controls such as Pitch. Only changed bands may touch their
     // coefficient calculators on the realtime packet boundary now.

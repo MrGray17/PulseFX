@@ -1,18 +1,8 @@
 #include "HeadphoneProfileCommand.h"
-#include <cmath>
+#include "HostProtocol.h"
 
 namespace pulsefx::windows {
 namespace {
-
-bool parseFloatStrict(const std::string& text, float& value) noexcept {
-    try {
-        std::size_t used = 0;
-        value = std::stof(text, &used);
-        return used == text.size() && std::isfinite(value);
-    } catch (...) {
-        return false;
-    }
-}
 
 bool parseCount(const std::string& text, std::size_t& value) noexcept {
     try {
@@ -46,7 +36,7 @@ bool applyHeadphoneProfileArgs(
 
     float preamp = 0.0f;
     std::size_t count = 0;
-    if (!parseFloatStrict(args[0], preamp) || preamp < -18.0f || preamp > 6.0f) {
+    if (!parseFiniteFloat(args[0], preamp) || preamp < -18.0f || preamp > 6.0f) {
         error = "invalid headphone profile preamp";
         return false;
     }
@@ -71,15 +61,15 @@ bool applyHeadphoneProfileArgs(
             error = "unsupported headphone filter type";
             return false;
         }
-        if (!parseFloatStrict(args[offset + 1], frequency) || frequency < 20.0f || frequency > 20000.0f) {
+        if (!parseFiniteFloat(args[offset + 1], frequency) || frequency < 20.0f || frequency > 20000.0f) {
             error = "invalid headphone filter frequency";
             return false;
         }
-        if (!parseFloatStrict(args[offset + 2], q) || q < 0.1f || q > 12.0f) {
+        if (!parseFiniteFloat(args[offset + 2], q) || q < 0.1f || q > 12.0f) {
             error = "invalid headphone filter Q";
             return false;
         }
-        if (!parseFloatStrict(args[offset + 3], gain) || gain < -12.0f || gain > 12.0f) {
+        if (!parseFiniteFloat(args[offset + 3], gain) || gain < -12.0f || gain > 12.0f) {
             error = "invalid headphone filter gain";
             return false;
         }

@@ -5,11 +5,17 @@
 namespace pulsefx {
 namespace {
 float dbToLinear(float db) noexcept { return std::pow(10.0f, db / 20.0f); }
+float finiteOr(float value, float fallback) noexcept {
+    return std::isfinite(value) ? value : fallback;
+}
+float safePrevious(float value, float neutral) noexcept {
+    return std::isfinite(value) ? value : neutral;
+}
 }
 
 void Processor::prepare(float sampleRate) noexcept {
     const ProcessorParameters desired = parameters_;
-    sampleRate_ = std::clamp(sampleRate, 8000.0f, 384000.0f);
+    sampleRate_ = std::clamp(finiteOr(sampleRate, 48000.0f), 8000.0f, 384000.0f);
     preampGain_.prepare(sampleRate_, 30.0f, 1.0f);
     equalizer_.prepare(sampleRate_);
     headphoneCorrection_.prepare(sampleRate_);
@@ -36,18 +42,34 @@ void Processor::prepare(float sampleRate) noexcept {
 }
 
 void Processor::setParameters(const ProcessorParameters& parameters) noexcept {
+    const ProcessorParameters previous = parameters_;
     ProcessorParameters next = parameters;
-    next.preampDb = std::clamp(next.preampDb, -18.0f, 9.0f);
-    next.bass = std::clamp(next.bass, 0.0f, 1.0f);
-    next.virtualBass = std::clamp(next.virtualBass, 0.0f, 1.0f);
-    next.bassCapability = std::clamp(next.bassCapability, 0.0f, 1.0f);
-    next.clarity = std::clamp(next.clarity, 0.0f, 1.0f);
-    next.fidelity = std::clamp(next.fidelity, 0.0f, 1.0f);
-    next.space = std::clamp(next.space, 0.0f, 1.0f);
-    next.surround = std::clamp(next.surround, 0.0f, 1.0f);
-    next.ambience = std::clamp(next.ambience, 0.0f, 1.0f);
-    next.dynamics = std::clamp(next.dynamics, 0.0f, 1.0f);
-    next.pitchSemitones = std::clamp(next.pitchSemitones, -5.0f, 5.0f);
+
+    // Treat every control snapshot as untrusted, even after host validation.
+    // A non-finite field preserves the last finite setting (or a neutral value
+    // if legacy/corrupt state somehow poisoned the previous snapshot).
+    next.preampDb = std::clamp(
+        finiteOr(next.preampDb, safePrevious(previous.preampDb, 0.0f)), -18.0f, 9.0f);
+    next.bass = std::clamp(
+        finiteOr(next.bass, safePrevious(previous.bass, 0.0f)), 0.0f, 1.0f);
+    next.virtualBass = std::clamp(
+        finiteOr(next.virtualBass, safePrevious(previous.virtualBass, 0.0f)), 0.0f, 1.0f);
+    next.bassCapability = std::clamp(
+        finiteOr(next.bassCapability, safePrevious(previous.bassCapability, 1.0f)), 0.0f, 1.0f);
+    next.clarity = std::clamp(
+        finiteOr(next.clarity, safePrevious(previous.clarity, 0.0f)), 0.0f, 1.0f);
+    next.fidelity = std::clamp(
+        finiteOr(next.fidelity, safePrevious(previous.fidelity, 0.0f)), 0.0f, 1.0f);
+    next.space = std::clamp(
+        finiteOr(next.space, safePrevious(previous.space, 0.0f)), 0.0f, 1.0f);
+    next.surround = std::clamp(
+        finiteOr(next.surround, safePrevious(previous.surround, 0.0f)), 0.0f, 1.0f);
+    next.ambience = std::clamp(
+        finiteOr(next.ambience, safePrevious(previous.ambience, 0.0f)), 0.0f, 1.0f);
+    next.dynamics = std::clamp(
+        finiteOr(next.dynamics, safePrevious(previous.dynamics, 0.0f)), 0.0f, 1.0f);
+    next.pitchSemitones = std::clamp(
+        finiteOr(next.pitchSemitones, safePrevious(previous.pitchSemitones, 0.0f)), -5.0f, 5.0f);
 
     // Match the reference product's documented effect compatibility while
     // keeping transitions smoothed internally.
@@ -60,7 +82,6 @@ void Processor::setParameters(const ProcessorParameters& parameters) noexcept {
         next.nightMode = false;
     }
 
-    const ProcessorParameters previous = parameters_;
     parameters_ = next;
 
     // Control snapshots arrive at audio packet boundaries. Avoid touching DSP

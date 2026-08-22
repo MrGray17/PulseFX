@@ -15,9 +15,10 @@ struct HrtfProfile {
 };
 
 // PulseFX perceptual externalizer. It retains the measured/analytic HRTF core,
-// then protects low-frequency anchoring and centered content while adding a
-// small, spectrally damped binaural early-reflection field. All storage is
-// fixed-size and processStereo() performs no allocation or blocking work.
+// protects low-frequency anchoring and centered content, and adds a small,
+// spectrally damped binaural early-reflection field. HRTF changes use a fixed-
+// storage crossfade so calibration/headphone switches do not hard-reset the
+// audible spatial field.
 class SpatialSurround {
 public:
     void prepare(float sampleRate) noexcept;
@@ -33,13 +34,41 @@ public:
 private:
     static constexpr std::size_t kReflectionBufferSize = 8192;
     static constexpr std::size_t kReflectionCount = 3;
+    static constexpr std::size_t kHrtfBankCount = 3;
 
+    struct HrtfBank {
+        FirConvolver leftToLeft{};
+        FirConvolver leftToRight{};
+        FirConvolver rightToLeft{};
+        FirConvolver rightToRight{};
+
+        void reset() noexcept {
+            leftToLeft.reset();
+            leftToRight.reset();
+            rightToLeft.reset();
+            rightToRight.reset();
+        }
+    };
+
+    void loadProfile(std::size_t bankIndex, const HrtfProfile& profile) noexcept;
+    void startProfileTransition(std::size_t targetBank) noexcept;
+    void processHrtfBank(
+        std::size_t bankIndex,
+        float dryLeft,
+        float dryRight,
+        float& wetLeft,
+        float& wetRight) noexcept;
     float readReflection(const std::array<float, kReflectionBufferSize>& buffer, std::size_t delay) const noexcept;
 
-    FirConvolver leftToLeft_{};
-    FirConvolver leftToRight_{};
-    FirConvolver rightToLeft_{};
-    FirConvolver rightToRight_{};
+    std::array<HrtfBank, kHrtfBankCount> hrtfBanks_{};
+    std::size_t activeHrtfBank_{0};
+    std::size_t targetHrtfBank_{1};
+    std::size_t pendingHrtfBank_{2};
+    bool profileInitialized_{false};
+    bool profileTransitionActive_{false};
+    bool pendingProfileReady_{false};
+    float profileTransition_{1.0f};
+    float profileTransitionStep_{1.0f};
 
     std::array<float, kReflectionBufferSize> reflectionLeft_{};
     std::array<float, kReflectionBufferSize> reflectionRight_{};

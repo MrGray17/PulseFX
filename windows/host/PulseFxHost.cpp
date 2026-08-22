@@ -25,16 +25,6 @@ bool parseBool(const std::string& value, bool& result) {
     return false;
 }
 
-bool parseFloat(const std::string& value, float& result) {
-    try {
-        std::size_t used = 0;
-        result = std::stof(value, &used);
-        return used == value.size();
-    } catch (...) {
-        return false;
-    }
-}
-
 bool parseUint32(const std::string& value, std::uint32_t& result) {
     try {
         std::size_t used = 0;
@@ -206,7 +196,7 @@ private:
     std::string handleFloatControlLocked(const HostCommand& command) {
         if (command.args.size() != 1) return errorJson("numeric control expects one value");
         float value = 0.0f;
-        if (!parseFloat(command.args[0], value)) return errorJson("invalid numeric value");
+        if (!parseFiniteFloat(command.args[0], value)) return errorJson("invalid numeric value");
 
         if (command.name == "preamp") {
             control_.processor.preampDb = std::clamp(value, -18.0f, 9.0f);
@@ -230,7 +220,7 @@ private:
         if (command.args.size() != 2) return errorJson("eq expects band index and gain dB");
         std::uint32_t band = 0;
         float gain = 0.0f;
-        if (!parseUint32(command.args[0], band) || band >= control_.eqDb.size() || !parseFloat(command.args[1], gain)) {
+        if (!parseUint32(command.args[0], band) || band >= control_.eqDb.size() || !parseFiniteFloat(command.args[1], gain)) {
             return errorJson("invalid EQ band or gain");
         }
         control_.eqDb[band] = std::clamp(gain, -12.0f, 12.0f);
@@ -253,7 +243,7 @@ private:
         if (command.args.size() != 2 || sourceId_.empty()) return errorJson("app_volume expects pid and volume");
         std::uint32_t pid = 0;
         float volume = 0.0f;
-        if (!parseUint32(command.args[0], pid) || !parseFloat(command.args[1], volume)) return errorJson("invalid app volume arguments");
+        if (!parseUint32(command.args[0], pid) || !parseFiniteFloat(command.args[1], volume)) return errorJson("invalid app volume arguments");
         if (!setAudioSessionVolume(sourceId_, pid, std::clamp(volume, 0.0f, 1.0f))) return errorJson("audio session was not found");
         return ackJson("app_volume");
     }

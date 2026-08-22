@@ -41,6 +41,20 @@ void assertBounds(const SignaturePlan& plan) {
     assert(plan.spatial.wetTrimDb >= -6.0f && plan.spatial.wetTrimDb <= 1.5f);
 }
 
+bool finiteProcessorParameters(const ProcessorParameters& p) {
+    return std::isfinite(p.preampDb) &&
+        std::isfinite(p.bass) &&
+        std::isfinite(p.virtualBass) &&
+        std::isfinite(p.bassCapability) &&
+        std::isfinite(p.clarity) &&
+        std::isfinite(p.fidelity) &&
+        std::isfinite(p.space) &&
+        std::isfinite(p.surround) &&
+        std::isfinite(p.ambience) &&
+        std::isfinite(p.dynamics) &&
+        std::isfinite(p.pitchSemitones);
+}
+
 } // namespace
 
 int main() {
@@ -165,6 +179,51 @@ int main() {
     assert(compiled.spatial.ipsilateralGain == weakPlan.spatial.ipsilateralGain);
     assert(compiled.spatial.contralateralGain == weakPlan.spatial.contralateralGain);
     assert(compiled.spatial.wetTrimDb == weakPlan.spatial.wetTrimDb);
+
+    // Defense in depth: Processor itself must preserve its last finite controls
+    // if a caller bypasses the native parser and supplies NaN/Inf directly.
+    Processor processor;
+    processor.prepare(std::numeric_limits<float>::quiet_NaN());
+    ProcessorParameters knownGood{};
+    knownGood.preampDb = -3.0f;
+    knownGood.bass = 0.22f;
+    knownGood.virtualBass = 0.31f;
+    knownGood.bassCapability = 0.42f;
+    knownGood.clarity = 0.27f;
+    knownGood.fidelity = 0.34f;
+    knownGood.space = 0.18f;
+    knownGood.dynamics = 0.12f;
+    knownGood.pitchSemitones = 1.25f;
+    processor.setParameters(knownGood);
+    const ProcessorParameters accepted = processor.parameters();
+    assert(finiteProcessorParameters(accepted));
+
+    ProcessorParameters poisoned = accepted;
+    poisoned.preampDb = std::numeric_limits<float>::quiet_NaN();
+    poisoned.bass = std::numeric_limits<float>::infinity();
+    poisoned.virtualBass = -std::numeric_limits<float>::infinity();
+    poisoned.bassCapability = std::numeric_limits<float>::quiet_NaN();
+    poisoned.clarity = std::numeric_limits<float>::quiet_NaN();
+    poisoned.fidelity = std::numeric_limits<float>::infinity();
+    poisoned.space = -std::numeric_limits<float>::infinity();
+    poisoned.surround = std::numeric_limits<float>::quiet_NaN();
+    poisoned.ambience = std::numeric_limits<float>::infinity();
+    poisoned.dynamics = std::numeric_limits<float>::quiet_NaN();
+    poisoned.pitchSemitones = std::numeric_limits<float>::infinity();
+    processor.setParameters(poisoned);
+    const ProcessorParameters recovered = processor.parameters();
+    assert(finiteProcessorParameters(recovered));
+    assert(recovered.preampDb == accepted.preampDb);
+    assert(recovered.bass == accepted.bass);
+    assert(recovered.virtualBass == accepted.virtualBass);
+    assert(recovered.bassCapability == accepted.bassCapability);
+    assert(recovered.clarity == accepted.clarity);
+    assert(recovered.fidelity == accepted.fidelity);
+    assert(recovered.space == accepted.space);
+    assert(recovered.surround == accepted.surround);
+    assert(recovered.ambience == accepted.ambience);
+    assert(recovered.dynamics == accepted.dynamics);
+    assert(recovered.pitchSemitones == accepted.pitchSemitones);
 
     // Exhaust the edge cube for every policy input so future formula changes
     // cannot accidentally escape bounds at combinations not covered above.
