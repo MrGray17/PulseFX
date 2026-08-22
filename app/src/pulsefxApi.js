@@ -27,6 +27,9 @@ export const pulsefxApi = {
   getProcessingMode() {
     return processingMode.mode;
   },
+  onProcessingMode(callback) {
+    return processingMode.subscribe(callback);
+  },
   async setProcessingMode(mode) {
     if (!desktop) return { ok: false, type: 'offline', error: 'Native PulseFX host is available only in the desktop app.' };
     if (mode !== 'signature' && mode !== 'manual') {

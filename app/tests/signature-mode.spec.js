@@ -124,3 +124,38 @@ test('post-hydration manual sound changes persist Manual mode', async ({ page })
     return saves.at(-1)?.settings?.mode;
   }).toBe('manual');
 });
+
+test('titlebar mode control follows automatic and explicit mode changes', async ({ page }) => {
+  await installModeMock(page, {});
+  await page.goto('/');
+
+  const group = page.getByRole('group', { name: 'PulseFX processing mode' });
+  const signature = group.getByRole('button', { name: /Signature/ });
+  const manual = group.getByRole('button', { name: /Manual/ });
+  await expect(group).toBeVisible();
+  await expect(signature).toHaveAttribute('aria-pressed', 'true');
+  await expect(manual).toHaveAttribute('aria-pressed', 'false');
+
+  await manual.click();
+  await expect(manual).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(async () => {
+    const history = await calls(page);
+    return history.filter((entry) => entry.kind === 'command' && entry.name === 'mode').at(-1)?.args?.[0];
+  }).toBe('manual');
+
+  await signature.click();
+  await expect(signature).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(async () => {
+    const history = await calls(page);
+    return history.filter((entry) => entry.kind === 'command' && entry.name === 'mode').at(-1)?.args?.[0];
+  }).toBe('signature');
+
+  const preamp = page.getByLabel('Preamp');
+  await preamp.evaluate((element) => {
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+    descriptor.set.call(element, '1');
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await expect(manual).toHaveAttribute('aria-pressed', 'true');
+});

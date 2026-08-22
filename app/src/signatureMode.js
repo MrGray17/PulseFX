@@ -39,17 +39,33 @@ export class ProcessingModeCoordinator {
   constructor() {
     this.mode = 'signature';
     this.startupSync = false;
+    this.listeners = new Set();
+  }
+
+  setMode(mode) {
+    if (!VALID_MODES.has(mode) || mode === this.mode) return;
+    this.mode = mode;
+    for (const listener of this.listeners) {
+      try { listener(this.mode); } catch { /* UI listeners never own audio state. */ }
+    }
+  }
+
+  subscribe(listener) {
+    if (typeof listener !== 'function') return () => {};
+    this.listeners.add(listener);
+    listener(this.mode);
+    return () => this.listeners.delete(listener);
   }
 
   restore(settings) {
-    this.mode = resolveProcessingMode(settings);
+    this.setMode(resolveProcessingMode(settings));
     this.startupSync = true;
     return applyFirstRunSignatureDefaults(settings, this.mode);
   }
 
   observeCommand(name, args = []) {
     if (name === 'mode' && VALID_MODES.has(args[0])) {
-      this.mode = args[0];
+      this.setMode(args[0]);
       this.startupSync = false;
       return null;
     }
@@ -62,7 +78,7 @@ export class ProcessingModeCoordinator {
       return null;
     }
 
-    if (isManualSoundCommand(name)) this.mode = 'manual';
+    if (isManualSoundCommand(name)) this.setMode('manual');
     return null;
   }
 
