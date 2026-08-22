@@ -23,21 +23,21 @@ function SignatureModeControl() {
   return <div className="processing-mode-control" role="group" aria-label="PulseFX processing mode">
     <button
       type="button"
+      aria-label="Signature mode"
       aria-pressed={mode === 'signature'}
       className={mode === 'signature' ? 'processing-mode-option active' : 'processing-mode-option'}
       onClick={() => choose('signature')}
       disabled={changing}
-      title="Adaptive enhancement based on device response, output volume, and headroom policy"
     >
       <Sparkles size={13}/><span><strong>Signature</strong><small>Adaptive</small></span>
     </button>
     <button
       type="button"
+      aria-label="Manual mode"
       aria-pressed={mode === 'manual'}
       className={mode === 'manual' ? 'processing-mode-option active' : 'processing-mode-option'}
       onClick={() => choose('manual')}
       disabled={changing}
-      title="Use the EQ and enhancement controls exactly as configured"
     >
       <SlidersHorizontal size={13}/><span><strong>Manual</strong><small>Your controls</small></span>
     </button>
