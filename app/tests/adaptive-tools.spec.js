@@ -85,8 +85,11 @@ test('Adaptive Tools maps real audio apps to native scenes and policy controls',
   await expect.poll(async () => (await calls(page)).some((call) => call.name === 'signature_strength' && Number(call.args[0]) === 1.2)).toBe(true);
 });
 
-test('Calibration is keyed to the selected headphone and sends bounded native tuning', async ({ page }) => {
+test('Calibration is keyed to the selected headphone and auditions always restore saved state', async ({ page }) => {
   await installAdaptiveMock(page);
+  await page.addInitScript(() => {
+    Object.defineProperty(window, 'AudioContext', { configurable: true, value: undefined });
+  });
   await page.goto('/');
   await page.getByRole('button', { name: 'Open Adaptive Tools' }).click();
   await page.getByRole('button', { name: 'Calibration' }).click();
@@ -108,6 +111,24 @@ test('Calibration is keyed to the selected headphone and sends bounded native tu
   const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('pulsefx.adaptiveTools.v1') || '{}'));
   expect(stored.calibrations['headphones/acme-one'].enabled).toBe(true);
   expect(stored.calibrations['headphones/acme-one'].itdScale).toBeCloseTo(1.08, 2);
+
+  const beforeAudition = (await calls(page)).length;
+  await page.getByRole('button', { name: 'Play A · Default' }).click();
+  await expect.poll(async () => (await calls(page)).slice(beforeAudition)
+    .filter((call) => call.name === 'spatial_calibration')
+    .map((call) => Boolean(call.args[0]))).toEqual([false, true]);
+
+  const guessA = page.getByRole('button', { name: 'X = A' });
+  const guessB = page.getByRole('button', { name: 'X = B' });
+  await page.getByRole('button', { name: 'New trial' }).click();
+  await expect(guessA).toBeDisabled();
+  await expect(guessB).toBeDisabled();
+  await page.getByRole('button', { name: 'Play X' }).click();
+  await expect(guessA).toBeEnabled();
+  await expect(guessB).toBeEnabled();
+  await guessA.click();
+  await expect(guessA).toBeDisabled();
+  await expect(guessB).toBeDisabled();
 
   await page.getByRole('button', { name: 'Use default' }).click();
   await expect.poll(async () => (await calls(page)).some((call) => call.name === 'spatial_calibration' && call.args[0] === false)).toBe(true);
