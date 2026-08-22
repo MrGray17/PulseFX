@@ -7,12 +7,8 @@ const { pathToFileURL } = require('node:url');
 const autoeq = require('./autoeq.cjs');
 const mediaLaunch = require('./mediaLaunch.cjs');
 const radio = require('./radio.cjs');
+const { validateNativeCommand } = require('./nativeCommandPolicy.cjs');
 
-const allowedCommands = new Set([
-  'ping', 'status', 'devices', 'apps', 'quit', 'output', 'enabled', 'night',
-  'headphone_enable', 'headphone_profile', 'preamp', 'bass', 'clarity', 'fidelity', 'spatial',
-  'surround', 'ambience', 'dynamics', 'pitch', 'eq', 'app_volume', 'app_mute',
-]);
 const audioExtensions = new Set(['.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg', '.opus', '.webm']);
 const defaultShortcuts = {
   toggleProcessing: 'CommandOrControl+Alt+B',
@@ -284,12 +280,7 @@ function quoteHostArg(value) {
 }
 
 async function commandNative(name, args = []) {
-  if (!allowedCommands.has(name)) throw new Error('unsupported native host command');
-  if (!Array.isArray(args) || args.length > 52) throw new Error('invalid command arguments');
-  for (const arg of args) {
-    if (!['string', 'number', 'boolean'].includes(typeof arg)) throw new Error('invalid command argument type');
-    if (String(arg).length > 4096) throw new Error('command argument is too long');
-  }
+  validateNativeCommand(name, args);
 
   await startHost();
   if (!hostProcess?.stdin?.writable) throw new Error('PulseFX native host is unavailable');
