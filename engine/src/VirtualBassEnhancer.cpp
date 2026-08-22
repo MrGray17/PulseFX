@@ -11,6 +11,12 @@ float onePoleCoeff(float sampleRate, float frequency) noexcept {
     return 1.0f - std::exp(-2.0f * 3.14159265358979323846f * clampedFrequency / rate);
 }
 
+float smoothingCoeff(float sampleRate, float milliseconds) noexcept {
+    const float rate = std::clamp(sampleRate, 8000.0f, 384000.0f);
+    const float seconds = std::clamp(milliseconds, 1.0f, 250.0f) * 0.001f;
+    return 1.0f - std::exp(-1.0f / (seconds * rate));
+}
+
 float finiteOrZero(float value) noexcept {
     return std::isfinite(value) ? value : 0.0f;
 }
@@ -25,24 +31,32 @@ void VirtualBassEnhancer::prepare(float sampleRate) noexcept {
     hp90Coeff_ = onePoleCoeff(sampleRate_, 90.0f);
     lp360Coeff_ = onePoleCoeff(sampleRate_, 360.0f);
     envelopeRelease_ = std::exp(-1.0f / (0.055f * sampleRate_));
+    controlSmoothingCoeff_ = smoothingCoeff(sampleRate_, 24.0f);
     reset();
 }
 
 void VirtualBassEnhancer::setAmount(float amount) noexcept {
-    amount_ = std::clamp(std::isfinite(amount) ? amount : 0.0f, 0.0f, 1.0f);
+    amountTarget_ = std::clamp(std::isfinite(amount) ? amount : 0.0f, 0.0f, 1.0f);
 }
 
 void VirtualBassEnhancer::setBassCapability(float capability) noexcept {
-    bassCapability_ = std::clamp(std::isfinite(capability) ? capability : 1.0f, 0.0f, 1.0f);
+    bassCapabilityTarget_ = std::clamp(std::isfinite(capability) ? capability : 1.0f, 0.0f, 1.0f);
 }
 
 void VirtualBassEnhancer::reset() noexcept {
+    amountCurrent_ = amountTarget_;
+    bassCapabilityCurrent_ = bassCapabilityTarget_;
     low110_ = 0.0f;
     low42_ = 0.0f;
     squareDc_ = 0.0f;
     harmonicLow90_ = 0.0f;
     harmonicLow360_ = 0.0f;
     envelope_ = 0.0f;
+}
+
+void VirtualBassEnhancer::smoothControls() noexcept {
+    amountCurrent_ += (amountTarget_ - amountCurrent_) * controlSmoothingCoeff_;
+    bassCapabilityCurrent_ += (bassCapabilityTarget_ - bassCapabilityCurrent_) * controlSmoothingCoeff_;
 }
 
 float VirtualBassEnhancer::processLowBand(float mono) noexcept {
@@ -81,8 +95,9 @@ float VirtualBassEnhancer::processHarmonics(float lowBand) noexcept {
 void VirtualBassEnhancer::processStereo(float& left, float& right) noexcept {
     left = finiteOrZero(left);
     right = finiteOrZero(right);
+    smoothControls();
 
-    const float effective = amount_ * (1.0f - bassCapability_);
+    const float effective = amountCurrent_ * (1.0f - bassCapabilityCurrent_);
     if (effective <= 1.0e-5f) return;
 
     // Bass synthesis is deliberately mono. It strengthens bass perception
