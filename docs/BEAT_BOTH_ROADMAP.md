@@ -6,12 +6,13 @@ PulseFX should not win by copying Boom 3D or FxSound feature-for-feature. It sho
 
 PulseFX is "better" only when it wins on measurable user outcomes:
 
-1. **Immersion:** convincing, stable headphone spatialization with less coloration and better localization.
-2. **Enhancement:** bass/detail/dynamics that sound fuller without turning into clipping, harshness, or pumping.
-3. **Personalization:** tuning follows the actual headphone model, listener preference, and application.
-4. **Latency:** enhancement stays usable for games, calls, and interactive audio.
-5. **Reliability:** no silent routing failures, feedback loops, stale device state, or fragile restart behavior.
-6. **Transparency:** users can inspect what processing is active and PulseFX can publish objective benchmark results.
+1. **Instant transformation:** music that is already playing becomes clearer, more separated, more spacious and more immersive immediately when PulseFX is enabled — with no setup ceremony or obvious loudness trick.
+2. **Immersion:** convincing, stable headphone spatialization with less coloration and better localization.
+3. **Enhancement:** bass/detail/dynamics that sound fuller without turning into clipping, harshness, or pumping.
+4. **Personalization:** tuning follows the actual headphone model, listener preference, and application.
+5. **Latency:** enhancement stays usable for games, calls, and interactive audio.
+6. **Reliability:** no silent routing failures, feedback loops, stale device state, or fragile restart behavior.
+7. **Transparency:** users can inspect what processing is active and PulseFX can publish objective benchmark results.
 
 ## Competitive position
 
@@ -21,6 +22,7 @@ PulseFX is "better" only when it wins on measurable user outcomes:
 - polished headphone-focused experience
 - multichannel virtualization
 - broad headphone profile surface
+- immediate "turn it on and hear the difference" experience on already-playing audio
 
 ### FxSound strength to beat
 
@@ -31,6 +33,7 @@ PulseFX is "better" only when it wins on measurable user outcomes:
 
 ### PulseFX differentiators
 
+- **Instant Signature sound**: a carefully tuned default profile that improves already-playing audio with one power toggle
 - **Personalized Spatial Calibration** rather than one generic HRTF response
 - **Per-app Scenes**: different processing for a game, browser, music player, voice call, movie player, etc.
 - **Volume-aware enhancement**: preserve perceived bass/detail at low listening levels without overprocessing at high levels
@@ -38,6 +41,65 @@ PulseFX is "better" only when it wins on measurable user outcomes:
 - **Open headphone correction provenance** with pinned revisions
 - **Fail-visible routing**: the app says when Windows is bypassing processing
 - **Low-latency mode** for interactive/game audio
+
+---
+
+# Phase 0 — Instant Wow / Signature Experience
+
+This is the most important product test. A user should not have to understand EQ, HRTFs, presets, dynamics, or headphone profiles before PulseFX sounds impressive.
+
+## Required first-run behavior
+
+1. User starts music in Spotify, YouTube, a browser, game, or local player **before** opening PulseFX.
+2. PulseFX attaches to the system-audio route without requiring the source application to restart.
+3. Pressing the master power button transitions from transparent/bypass to the default **PulseFX Signature** processing chain.
+4. The same music should immediately feel clearer, more separated and more spatially externalized.
+5. There must be no click, burst, silence gap, device jump, or obvious gain jump during the transition.
+6. The user can toggle PulseFX off/on repeatedly for an honest instant A/B.
+
+## Signature profile principles
+
+The default profile should be deliberately conservative and broadly useful rather than an exaggerated demo preset:
+
+- headphone correction when a known model is selected
+- gentle detail/fidelity enhancement
+- restrained clarity enhancement
+- controlled bass enhancement with headroom budgeting
+- spatial widening that protects low-frequency mono compatibility
+- binaural/3D contribution strong enough to create externalization without hollowing the center image
+- minimal early-reflection ambience for externalization, not audible reverb
+- true-peak protection at the end of the chain
+- no default pitch modification
+- no heavy night-mode compression
+
+The exact values are **measurement/tuning outputs**, not constants to guess. Boom, FxSound and PulseFX reference captures should determine the final Signature tuning.
+
+## Activation engineering
+
+- [ ] verify an already-playing source continues through endpoint activation without restarting the source process
+- [ ] dedicated master wet/dry transition rather than hard DSP insertion/removal
+- [ ] click-free transition ramp for enable/disable and default-profile changes
+- [ ] preserve active physical output when PulseFX becomes the Windows default endpoint
+- [ ] preload/prepare all default filter state before wet transition begins
+- [ ] never allocate, load profiles, access disk/network, or rebuild unrelated filters in the realtime callback
+- [ ] expose activation/routing failure immediately instead of showing a false enabled state
+
+## Acceptance tests
+
+These are engineering targets until validated on real Windows hardware:
+
+- [ ] already-playing Spotify/browser/local audio continues without source restart
+- [ ] no detectable discontinuity/click in an enable → disable → enable capture
+- [ ] activation does not introduce an unbounded silence gap
+- [ ] repeated master-toggle stress test does not increment persistent underrun/overrun counters
+- [ ] loudness-matched A/B: default PulseFX Signature stays within **±0.5 dB** RMS/short-window level of the chosen reference comparison so preference is not driven by simple gain
+- [ ] no true-peak overshoot beyond the configured limiter ceiling during activation
+- [ ] blind A/B listeners prefer Signature over clean bypass on clarity/space without a statistically obvious "the louder one wins" bias
+- [ ] the Signature profile works acceptably on both unknown/generic outputs and known corrected headphone models
+
+## Default-product rule
+
+Advanced controls remain available, but **the power button must be enough**. If PulseFX only sounds impressive after manually adjusting ten controls, the default product has failed.
 
 ---
 
@@ -195,6 +257,8 @@ using the same reference material and loudness-matched conditions.
 
 Do not claim this until we can demonstrate all of the following:
 
+- [ ] with music already playing, PulseFX can be enabled without source restart, audible discontinuity, or routing confusion
+- [ ] blind listeners prefer the loudness-matched PulseFX Signature profile to clean bypass for clarity/space on the reference music set
 - [ ] blind listeners prefer PulseFX or cannot reliably distinguish it from the best competitor spatial rendering at matched loudness
 - [ ] PulseFX enhancement preserves equal or lower distortion/headroom violations on the reference suite
 - [ ] personalized spatial calibration improves localization/externalization for test listeners versus PulseFX default
