@@ -23,16 +23,90 @@ void expectFinite(const std::vector<float>& audio) {
     for (float sample : audio) require(std::isfinite(sample), "non-finite sample");
 }
 
-void testBypassIsBitTransparent() {
+void testBypassIsLatencyAlignedTransparent() {
     pulsefx::Processor processor;
     processor.prepare(kSampleRate);
     pulsefx::ProcessorParameters params{};
     params.bypass = true;
     processor.setParameters(params);
-    std::vector<float> audio{0.25f, -0.5f, 0.75f, -0.125f, -0.99f, 0.99f};
+
+    constexpr std::size_t frames = 12000;
+    std::vector<float> audio(frames * 2, 0.0f);
+    for (std::size_t i = 0; i < frames; ++i) {
+        const float t = static_cast<float>(i) / kSampleRate;
+        audio[i * 2] = 0.12f * std::sin(2.0f * std::numbers::pi_v<float> * 997.0f * t);
+        audio[i * 2 + 1] = 0.08f * std::sin(2.0f * std::numbers::pi_v<float> * 613.0f * t + 0.37f);
+    }
     const auto original = audio;
-    processor.processInterleaved(audio.data(), audio.size() / 2, 2);
-    require(audio == original, "bypass changed samples");
+    const std::size_t latency = processor.latencySamples();
+    require(latency > 0, "bypass reference should retain declared processing latency");
+    processor.processInterleaved(audio.data(), frames, 2);
+
+    float maxError = 0.0f;
+    for (std::size_t i = latency + 512; i < frames; ++i) {
+        maxError = std::max(maxError, std::abs(audio[i * 2] - original[(i - latency) * 2]));
+        maxError = std::max(maxError, std::abs(audio[i * 2 + 1] - original[(i - latency) * 2 + 1]));
+    }
+    require(maxError < 2.0e-4f, "latency-aligned bypass changed clean audio");
+}
+
+void testRepeatedMasterTogglesStayLatencyAligned() {
+    pulsefx::Processor processor;
+    processor.prepare(kSampleRate);
+    pulsefx::ProcessorParameters params{};
+    processor.setParameters(params);
+
+    constexpr std::size_t frames = 32768;
+    constexpr std::size_t chunk = 257;
+    std::vector<float> audio(frames * 2, 0.0f);
+    for (std::size_t i = 0; i < frames; ++i) {
+        const float t = static_cast<float>(i) / kSampleRate;
+        audio[i * 2] = 0.08f * std::sin(2.0f * std::numbers::pi_v<float> * 440.0f * t)
+            + 0.025f * std::sin(2.0f * std::numbers::pi_v<float> * 3100.0f * t);
+        audio[i * 2 + 1] = 0.07f * std::sin(2.0f * std::numbers::pi_v<float> * 523.25f * t + 0.21f);
+    }
+    const auto original = audio;
+    const std::size_t latency = processor.latencySamples();
+
+    bool bypass = false;
+    std::size_t nextToggle = 2048;
+    for (std::size_t offset = 0; offset < frames;) {
+        while (offset >= nextToggle && nextToggle < frames) {
+            bypass = !bypass;
+            params.bypass = bypass;
+            processor.setParameters(params);
+            nextToggle += 2048;
+        }
+        const std::size_t count = std::min(chunk, frames - offset);
+        processor.processInterleaved(audio.data() + offset * 2, count, 2);
+        offset += count;
+    }
+
+    float maxError = 0.0f;
+    for (std::size_t i = latency + 1024; i < frames; ++i) {
+        maxError = std::max(maxError, std::abs(audio[i * 2] - original[(i - latency) * 2]));
+        maxError = std::max(maxError, std::abs(audio[i * 2 + 1] - original[(i - latency) * 2 + 1]));
+    }
+    require(maxError < 3.0e-4f, "master toggles disturbed a neutral latency-aligned chain");
+    expectFinite(audio);
+}
+
+void testMasterBypassDoesNotChangeDeclaredLatency() {
+    pulsefx::Processor processor;
+    processor.prepare(kSampleRate);
+    pulsefx::ProcessorParameters params{};
+    params.pitchSemitones = 2.0f;
+    processor.setParameters(params);
+    const std::size_t enabledLatency = processor.latencySamples();
+    require(enabledLatency > processor.limiter().latencySamples(), "pitch test did not add declared latency");
+
+    params.bypass = true;
+    processor.setParameters(params);
+    require(processor.latencySamples() == enabledLatency, "master bypass changed declared latency");
+
+    params.bypass = false;
+    processor.setParameters(params);
+    require(processor.latencySamples() == enabledLatency, "master re-enable changed declared latency");
 }
 
 void testFlatChainIsTransparentApartFromDeclaredLatency() {
@@ -286,7 +360,9 @@ void testExtremeControlsNeverProduceNan() {
 }
 
 int main() {
-    testBypassIsBitTransparent();
+    testBypassIsLatencyAlignedTransparent();
+    testRepeatedMasterTogglesStayLatencyAligned();
+    testMasterBypassDoesNotChangeDeclaredLatency();
     testFlatChainIsTransparentApartFromDeclaredLatency();
     testLimiterContainsAHotTransient();
     test31BandEqualizerActuallyBoostsOneKhz();

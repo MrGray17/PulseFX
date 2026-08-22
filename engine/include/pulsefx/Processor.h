@@ -12,7 +12,9 @@
 #include "SpatialSurround.h"
 #include "StereoEnhancer.h"
 #include "VirtualBassEnhancer.h"
+#include <array>
 #include <cstddef>
+#include <vector>
 
 namespace pulsefx {
 
@@ -54,7 +56,17 @@ public:
     void processInterleaved(float* samples, std::size_t frames, std::size_t channels) noexcept;
 
 private:
+    static constexpr std::size_t kMasterTransitionChunkFrames = 2048;
+
     void observeLimiterStress(float gainReductionDb) noexcept;
+    void prepareDryReferenceDelay() noexcept;
+    void resetDryReferenceDelay() noexcept;
+    void processDryReference(
+        float inputLeft,
+        float inputRight,
+        std::size_t delayFrames,
+        float& outputLeft,
+        float& outputRight) noexcept;
 
     ProcessorParameters parameters_{};
     float sampleRate_{48000.0f};
@@ -62,6 +74,11 @@ private:
     float headroomAttackCoeff_{0.0f};
     float headroomReleaseCoeff_{0.0f};
     SmoothedValue preampGain_{};
+    SmoothedValue masterWet_{};
+    std::vector<float> dryDelay_{};
+    std::size_t dryDelayFrames_{0};
+    std::size_t dryDelayWriteFrame_{0};
+    std::array<float, kMasterTransitionChunkFrames * 2> dryScratch_{};
     Equalizer equalizer_{};
     HeadphoneCorrection headphoneCorrection_{};
     BassEnhancer bass_{};

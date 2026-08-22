@@ -18,6 +18,9 @@ public:
     float semitones() const noexcept;
     bool active() const noexcept;
     std::size_t latencySamples() const noexcept;
+    // Prepared algorithm latency even while transpose is currently inactive.
+    // Used only to reserve latency-matching storage outside the realtime path.
+    std::size_t preparedLatencySamples() const noexcept;
 
     // In-place stereo processing. All scratch storage and spectral state are
     // allocated during prepare(); the realtime path does not allocate.
