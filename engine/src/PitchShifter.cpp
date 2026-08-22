@@ -83,7 +83,11 @@ bool PitchShifter::active() const noexcept {
 }
 
 std::size_t PitchShifter::latencySamples() const noexcept {
-    return active() && impl_ ? impl_->latency : 0;
+    return active() ? preparedLatencySamples() : 0;
+}
+
+std::size_t PitchShifter::preparedLatencySamples() const noexcept {
+    return impl_ && impl_->prepared ? impl_->latency : 0;
 }
 
 void PitchShifter::processInterleaved(float* stereo, std::size_t frames) noexcept {

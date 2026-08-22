@@ -20,6 +20,9 @@ void Processor::prepare(float sampleRate) noexcept {
     headroomReleaseCoeff_ = std::exp(-1.0f / (2.5f * sampleRate_));
     headroomStress_ = 0.0f;
     preampGain_.prepare(sampleRate_, 30.0f, 1.0f);
+    // An ~8 ms exponential time constant settles to within 0.1% in roughly
+    // 55 ms: fast enough to feel immediate, slow enough to avoid a hard edge.
+    masterWet_.prepare(sampleRate_, 8.0f, desired.bypass ? 0.0f : 1.0f);
     equalizer_.prepare(sampleRate_);
     headphoneCorrection_.prepare(sampleRate_);
     bass_.prepare(sampleRate_);
@@ -35,6 +38,7 @@ void Processor::prepare(float sampleRate) noexcept {
     limiter_.setCeilingDb(-1.0f);
     limiter_.setLookaheadMs(5.0f);
     limiter_.setReleaseMs(110.0f);
+    prepareDryReferenceDelay();
 
     // prepare() resets some stage internals (notably preamp and pitch). Make the
     // first post-prepare parameter application compare against a neutral logical
@@ -42,6 +46,54 @@ void Processor::prepare(float sampleRate) noexcept {
     // updates remain delta-only.
     parameters_ = ProcessorParameters{};
     setParameters(desired);
+}
+
+void Processor::prepareDryReferenceDelay() noexcept {
+    // Reserve against the limiter's full supported lookahead, not only today's
+    // 5 ms setting, so future control changes cannot overrun the dry reference.
+    const std::size_t maximumLatency = Limiter::kMaxLookaheadFrames +
+        pitchShifter_.preparedLatencySamples();
+    try {
+        dryDelayFrames_ = maximumLatency + 1;
+        dryDelay_.assign(dryDelayFrames_ * 2, 0.0f);
+    } catch (...) {
+        // Memory pressure must never tear down system audio. If this rare
+        // allocation fails, bypass falls back to the legacy direct path rather
+        // than attempting a misaligned crossfade.
+        dryDelay_.clear();
+        dryDelayFrames_ = 0;
+    }
+    dryDelayWriteFrame_ = 0;
+    dryScratch_.fill(0.0f);
+}
+
+void Processor::resetDryReferenceDelay() noexcept {
+    std::fill(dryDelay_.begin(), dryDelay_.end(), 0.0f);
+    dryDelayWriteFrame_ = 0;
+    dryScratch_.fill(0.0f);
+}
+
+void Processor::processDryReference(
+    float inputLeft,
+    float inputRight,
+    std::size_t delayFrames,
+    float& outputLeft,
+    float& outputRight) noexcept {
+    if (dryDelayFrames_ == 0 || dryDelay_.size() < dryDelayFrames_ * 2) {
+        outputLeft = inputLeft;
+        outputRight = inputRight;
+        return;
+    }
+
+    const std::size_t delay = std::min(delayFrames, dryDelayFrames_ - 1);
+    const std::size_t write = dryDelayWriteFrame_;
+    dryDelay_[write * 2] = inputLeft;
+    dryDelay_[write * 2 + 1] = inputRight;
+
+    const std::size_t read = (write + dryDelayFrames_ - delay) % dryDelayFrames_;
+    outputLeft = dryDelay_[read * 2];
+    outputRight = dryDelay_[read * 2 + 1];
+    dryDelayWriteFrame_ = (write + 1) % dryDelayFrames_;
 }
 
 void Processor::setParameters(const ProcessorParameters& parameters) noexcept {
@@ -86,6 +138,9 @@ void Processor::setParameters(const ProcessorParameters& parameters) noexcept {
     }
 
     parameters_ = next;
+    if (previous.bypass != next.bypass) {
+        masterWet_.setTarget(next.bypass ? 0.0f : 1.0f);
+    }
 
     // The headroom governor belongs only to Signature. Reset its memory when
     // entering/leaving adaptive mode or when processing is explicitly bypassed
@@ -116,6 +171,8 @@ void Processor::setParameters(const ProcessorParameters& parameters) noexcept {
 
 void Processor::reset() noexcept {
     preampGain_.reset(dbToLinear(parameters_.preampDb));
+    masterWet_.reset(parameters_.bypass ? 0.0f : 1.0f);
+    resetDryReferenceDelay();
     equalizer_.reset();
     headphoneCorrection_.reset();
     bass_.reset();
@@ -167,67 +224,95 @@ std::size_t Processor::latencySamples() const noexcept {
 }
 
 void Processor::processInterleaved(float* samples, std::size_t frames, std::size_t channels) noexcept {
-    if (!samples || frames == 0 || channels < 2 || parameters_.bypass) return;
+    if (!samples || frames == 0 || channels < 2) return;
+
+    // If the one-time dry-delay allocation failed under memory pressure, retain
+    // the old fail-open bypass behavior rather than performing a misaligned mix.
+    if (dryDelayFrames_ == 0 && parameters_.bypass) return;
 
     // The governor changes slowly and is sampled once per host block. This keeps
     // enrichment weighting constant inside a packet while the limiter updates
     // the stress envelope sample-by-sample for the next packet.
     const float enrichmentBlend = headroomEnhancementBlend();
+    const std::size_t dryLatency = latencySamples();
 
-    // Tone/dynamics stage. Pitch is block-based, so the chain is deliberately
-    // split around it rather than allocating or buffering inside a per-sample
-    // processor.
-    for (std::size_t frame = 0; frame < frames; ++frame) {
-        float& leftOut = samples[frame * channels];
-        float& rightOut = samples[frame * channels + 1];
-        const float gain = preampGain_.next();
-        float left = std::isfinite(leftOut) ? leftOut * gain : 0.0f;
-        float right = std::isfinite(rightOut) ? rightOut * gain : 0.0f;
-        equalizer_.processStereo(left, right);
-        headphoneCorrection_.processStereo(left, right);
+    std::size_t offset = 0;
+    while (offset < frames) {
+        const std::size_t count = std::min(kMasterTransitionChunkFrames, frames - offset);
 
-        // Correction and user tone shaping define the protected baseline.
-        // Signature enrichment is allowed to retreat toward it under sustained
-        // limiter pressure, but the baseline itself is never dynamically EQ'd.
-        const float baselineLeft = left;
-        const float baselineRight = right;
-        bass_.processStereo(left, right);
-        virtualBass_.processStereo(left, right);
-        fidelity_.processStereo(left, right);
-        clarity_.processStereo(left, right);
-        left = baselineLeft + (left - baselineLeft) * enrichmentBlend;
-        right = baselineRight + (right - baselineRight) * enrichmentBlend;
+        // Tone/dynamics stage. Capture the unprocessed reference before any
+        // gain/EQ/effect work and delay it to the same declared latency as the
+        // wet chain. The fixed scratch array keeps the callback allocation-free.
+        for (std::size_t frame = 0; frame < count; ++frame) {
+            float& leftOut = samples[(offset + frame) * channels];
+            float& rightOut = samples[(offset + frame) * channels + 1];
+            const float inputLeft = std::isfinite(leftOut) ? leftOut : 0.0f;
+            const float inputRight = std::isfinite(rightOut) ? rightOut : 0.0f;
+            processDryReference(
+                inputLeft,
+                inputRight,
+                dryLatency,
+                dryScratch_[frame * 2],
+                dryScratch_[frame * 2 + 1]);
 
-        // Keep dynamics outside the enrichment blend: compression can reduce
-        // peak pressure and should not be weakened precisely when headroom is
-        // scarce.
-        dynamics_.processStereo(left, right);
-        leftOut = left;
-        rightOut = right;
-    }
+            const float gain = preampGain_.next();
+            float left = inputLeft * gain;
+            float right = inputRight * gain;
+            equalizer_.processStereo(left, right);
+            headphoneCorrection_.processStereo(left, right);
 
-    if (channels == 2 && pitchShifter_.active()) {
-        pitchShifter_.processInterleaved(samples, frames);
-    }
+            // Correction and user tone shaping define the protected baseline.
+            // Signature enrichment is allowed to retreat toward it under sustained
+            // limiter pressure, but the baseline itself is never dynamically EQ'd.
+            const float baselineLeft = left;
+            const float baselineRight = right;
+            bass_.processStereo(left, right);
+            virtualBass_.processStereo(left, right);
+            fidelity_.processStereo(left, right);
+            clarity_.processStereo(left, right);
+            left = baselineLeft + (left - baselineLeft) * enrichmentBlend;
+            right = baselineRight + (right - baselineRight) * enrichmentBlend;
 
-    // Spatial/output-protection stage. Keeping the limiter last means every
-    // effect, including pitch, is covered by the same true-peak ceiling.
-    for (std::size_t frame = 0; frame < frames; ++frame) {
-        float& leftOut = samples[frame * channels];
-        float& rightOut = samples[frame * channels + 1];
-        float left = std::isfinite(leftOut) ? leftOut : 0.0f;
-        float right = std::isfinite(rightOut) ? rightOut : 0.0f;
-        const float spatialBaselineLeft = left;
-        const float spatialBaselineRight = right;
-        spatialSurround_.processStereo(left, right);
-        ambience_.processStereo(left, right);
-        stereo_.processStereo(left, right);
-        left = spatialBaselineLeft + (left - spatialBaselineLeft) * enrichmentBlend;
-        right = spatialBaselineRight + (right - spatialBaselineRight) * enrichmentBlend;
-        limiter_.processStereo(left, right);
-        observeLimiterStress(limiter_.gainReductionDb());
-        leftOut = left;
-        rightOut = right;
+            // Keep dynamics outside the enrichment blend: compression can reduce
+            // peak pressure and should not be weakened precisely when headroom is
+            // scarce.
+            dynamics_.processStereo(left, right);
+            leftOut = left;
+            rightOut = right;
+        }
+
+        if (channels == 2 && pitchShifter_.active()) {
+            pitchShifter_.processInterleaved(samples + offset * channels, count);
+        }
+
+        // Spatial/output-protection stage. Keeping the limiter last means every
+        // effect, including pitch, is covered by the same true-peak ceiling.
+        for (std::size_t frame = 0; frame < count; ++frame) {
+            float& leftOut = samples[(offset + frame) * channels];
+            float& rightOut = samples[(offset + frame) * channels + 1];
+            float left = std::isfinite(leftOut) ? leftOut : 0.0f;
+            float right = std::isfinite(rightOut) ? rightOut : 0.0f;
+            const float spatialBaselineLeft = left;
+            const float spatialBaselineRight = right;
+            spatialSurround_.processStereo(left, right);
+            ambience_.processStereo(left, right);
+            stereo_.processStereo(left, right);
+            left = spatialBaselineLeft + (left - spatialBaselineLeft) * enrichmentBlend;
+            right = spatialBaselineRight + (right - spatialBaselineRight) * enrichmentBlend;
+            limiter_.processStereo(left, right);
+            observeLimiterStress(limiter_.gainReductionDb());
+
+            // Linear interpolation has unity summed gain for identical/correlated
+            // dry and wet signals, avoiding the +3 dB midpoint bump of an equal-
+            // power crossfade. Both paths are latency aligned before this point.
+            const float wet = masterWet_.next();
+            const float dryLeft = dryScratch_[frame * 2];
+            const float dryRight = dryScratch_[frame * 2 + 1];
+            leftOut = dryLeft + (left - dryLeft) * wet;
+            rightOut = dryRight + (right - dryRight) * wet;
+        }
+
+        offset += count;
     }
 }
 
