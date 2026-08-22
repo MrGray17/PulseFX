@@ -99,7 +99,7 @@ function cleanText(value, maxLength = 200) {
 }
 
 function normalizeCountryCode(value) {
-  const code = cleanText(value, 2).toUpperCase();
+  const code = cleanText(value, 16).toUpperCase();
   return /^[A-Z]{2}$/.test(code) ? code : '';
 }
 
@@ -196,7 +196,6 @@ async function recordClick(stationuuid) {
     await requestFromNetwork(`/json/url/${encodeURIComponent(id)}`);
     return true;
   } catch {
-    // Click telemetry must never stop playback.
     return false;
   }
 }
