@@ -24,6 +24,7 @@ add_library(pulsefx_dsp STATIC
     engine/src/Equalizer.cpp
     engine/src/HeadphoneCorrection.cpp
     engine/src/BassEnhancer.cpp
+    engine/src/VirtualBassEnhancer.cpp
     engine/src/FidelityEnhancer.cpp
     engine/src/ClarityEnhancer.cpp
     engine/src/Dynamics.cpp
@@ -141,6 +142,15 @@ if(PULSEFX_BUILD_TESTS)
     target_compile_options(pulsefx_spatial_profile_tests PRIVATE -Wall -Wextra -Wpedantic)
   endif()
   add_test(NAME pulsefx_spatial_profile_tests COMMAND pulsefx_spatial_profile_tests)
+
+  add_executable(pulsefx_virtual_bass_tests engine/tests/virtual_bass_tests.cpp)
+  target_link_libraries(pulsefx_virtual_bass_tests PRIVATE pulsefx_dsp)
+  if(MSVC)
+    target_compile_options(pulsefx_virtual_bass_tests PRIVATE /W4 /permissive-)
+  else()
+    target_compile_options(pulsefx_virtual_bass_tests PRIVATE -Wall -Wextra -Wpedantic)
+  endif()
+  add_test(NAME pulsefx_virtual_bass_tests COMMAND pulsefx_virtual_bass_tests)
 
   add_executable(pulsefx_host_protocol_tests windows/host/host_protocol_tests.cpp)
   target_link_libraries(pulsefx_host_protocol_tests PRIVATE pulsefx_host_protocol)
