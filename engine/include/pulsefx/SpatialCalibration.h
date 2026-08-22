@@ -1,4 +1,5 @@
 #pragma once
+#include "SpatialProfileTuning.h"
 #include "SpatialSurround.h"
 #include <algorithm>
 #include <array>
@@ -27,6 +28,24 @@ inline SpatialCalibration sanitizeSpatialCalibration(SpatialCalibration value) n
     value.ipsilateralGain = std::clamp(value.ipsilateralGain, 0.75f, 1.25f);
     value.wetTrimDb = std::clamp(value.wetTrimDb, -6.0f, 3.0f);
     return value;
+}
+
+// Compose adaptive Signature spatial intent with a listener/headphone
+// calibration. This is a control-thread transform, not a second realtime
+// effect. The result is sanitized back into the same conservative bounds used
+// by the HRTF profile transformer.
+inline SpatialProfileTuning composeSpatialProfileTuning(
+    SpatialProfileTuning signature,
+    SpatialProfileTuning calibration) noexcept {
+    signature = sanitizeSpatialProfileTuning(signature);
+    calibration = sanitizeSpatialProfileTuning(calibration);
+
+    SpatialProfileTuning combined{};
+    combined.itdScale = signature.itdScale * calibration.itdScale;
+    combined.ipsilateralGain = signature.ipsilateralGain * calibration.ipsilateralGain;
+    combined.contralateralGain = signature.contralateralGain * calibration.contralateralGain;
+    combined.wetTrimDb = signature.wetTrimDb + calibration.wetTrimDb;
+    return sanitizeSpatialProfileTuning(combined);
 }
 
 namespace detail {

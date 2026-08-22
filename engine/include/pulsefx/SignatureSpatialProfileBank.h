@@ -1,26 +1,38 @@
 #pragma once
+#include "SpatialCalibration.h"
 #include "SpatialProfileTuning.h"
 #include <cmath>
 #include <cstdint>
 
 namespace pulsefx {
 
-// Precomputes the neutral and Signature HRTF profiles for one exact stream
-// sample rate. All FIR generation/tuning happens on the control thread; the
-// realtime renderer only receives fixed-size profiles plus non-zero revisions.
+// Precomputes the calibrated Manual and calibrated+adaptive Signature HRTF
+// profiles for one exact stream sample rate. All FIR generation/tuning happens
+// on the control thread; the realtime renderer receives fixed-size profiles plus
+// non-zero revisions only.
 class SignatureSpatialProfileBank {
 public:
-    bool update(float sampleRate, SpatialProfileTuning tuning) noexcept {
+    bool update(
+        float sampleRate,
+        SpatialProfileTuning signatureTuning,
+        SpatialProfileTuning calibrationTuning = {}) noexcept {
         if (!std::isfinite(sampleRate) || sampleRate < 8000.0f || sampleRate > 384000.0f) {
             return false;
         }
-        tuning = sanitizeSpatialProfileTuning(tuning);
-        if (valid_ && sampleRate_ == sampleRate && sameTuning(tuning_, tuning)) return false;
+        signatureTuning = sanitizeSpatialProfileTuning(signatureTuning);
+        calibrationTuning = sanitizeSpatialProfileTuning(calibrationTuning);
+        if (valid_ && sampleRate_ == sampleRate &&
+            sameTuning(signatureTuning_, signatureTuning) &&
+            sameTuning(calibrationTuning_, calibrationTuning)) return false;
 
         sampleRate_ = sampleRate;
-        tuning_ = tuning;
-        manualProfile_ = SpatialSurround::makeDefaultProfile(sampleRate_);
-        signatureProfile_ = tuneSpatialProfile(manualProfile_, tuning_);
+        signatureTuning_ = signatureTuning;
+        calibrationTuning_ = calibrationTuning;
+        const auto base = SpatialSurround::makeDefaultProfile(sampleRate_);
+        manualProfile_ = tuneSpatialProfile(base, calibrationTuning_);
+        signatureProfile_ = tuneSpatialProfile(
+            base,
+            composeSpatialProfileTuning(signatureTuning_, calibrationTuning_));
         manualRevision_ = nextRevision();
         signatureRevision_ = nextRevision();
         valid_ = true;
@@ -29,7 +41,8 @@ public:
 
     bool valid() const noexcept { return valid_; }
     float sampleRate() const noexcept { return sampleRate_; }
-    const SpatialProfileTuning& tuning() const noexcept { return tuning_; }
+    const SpatialProfileTuning& tuning() const noexcept { return signatureTuning_; }
+    const SpatialProfileTuning& calibrationTuning() const noexcept { return calibrationTuning_; }
     const HrtfProfile& manualProfile() const noexcept { return manualProfile_; }
     const HrtfProfile& signatureProfile() const noexcept { return signatureProfile_; }
     std::uint64_t manualRevision() const noexcept { return manualRevision_; }
@@ -53,7 +66,8 @@ private:
 
     bool valid_{false};
     float sampleRate_{0.0f};
-    SpatialProfileTuning tuning_{};
+    SpatialProfileTuning signatureTuning_{};
+    SpatialProfileTuning calibrationTuning_{};
     HrtfProfile manualProfile_{};
     HrtfProfile signatureProfile_{};
     std::uint64_t revisionCounter_{0};
