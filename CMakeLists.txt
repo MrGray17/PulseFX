@@ -29,6 +29,7 @@ add_library(pulsefx_dsp STATIC
     engine/src/Dynamics.cpp
     engine/src/PitchShifter.cpp
     engine/src/SpatialSurround.cpp
+    engine/src/SpatialProfileTuning.cpp
     engine/src/MultichannelBinaural.cpp
     engine/src/Ambience.cpp
     engine/src/StereoEnhancer.cpp
@@ -131,6 +132,15 @@ if(PULSEFX_BUILD_TESTS)
     target_compile_options(pulsefx_parity_tests PRIVATE -Wall -Wextra -Wpedantic)
   endif()
   add_test(NAME pulsefx_parity_tests COMMAND pulsefx_parity_tests)
+
+  add_executable(pulsefx_spatial_profile_tests engine/tests/spatial_profile_tests.cpp)
+  target_link_libraries(pulsefx_spatial_profile_tests PRIVATE pulsefx_dsp)
+  if(MSVC)
+    target_compile_options(pulsefx_spatial_profile_tests PRIVATE /W4 /permissive-)
+  else()
+    target_compile_options(pulsefx_spatial_profile_tests PRIVATE -Wall -Wextra -Wpedantic)
+  endif()
+  add_test(NAME pulsefx_spatial_profile_tests COMMAND pulsefx_spatial_profile_tests)
 
   add_executable(pulsefx_host_protocol_tests windows/host/host_protocol_tests.cpp)
   target_link_libraries(pulsefx_host_protocol_tests PRIVATE pulsefx_host_protocol)
