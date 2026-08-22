@@ -282,7 +282,8 @@ function AdaptiveTools() {
   const playAbx = async () => {
     if (probeBusy) return;
     const hidden = abx.hidden;
-    await playVariant(hidden);
+    const played = await playVariant(hidden);
+    if (!played) return;
     setAbx((current) => current.hidden === hidden ? { ...current, played: true } : current);
   };
   const guessAbx = (guess) => {
