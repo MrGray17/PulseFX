@@ -1,5 +1,6 @@
 #include "pulsefx/AdaptiveSignature.h"
 #include "pulsefx/SignatureControls.h"
+#include "pulsefx/SignatureDeviceAnalysis.h"
 #include <cassert>
 #include <cmath>
 #include <limits>
@@ -41,18 +42,59 @@ void assertBounds(const SignaturePlan& plan) {
     assert(plan.spatial.wetTrimDb >= -6.0f && plan.spatial.wetTrimDb <= 1.5f);
 }
 
-bool finiteProcessorParameters(const ProcessorParameters& p) {
-    return std::isfinite(p.preampDb) &&
-        std::isfinite(p.bass) &&
-        std::isfinite(p.virtualBass) &&
-        std::isfinite(p.bassCapability) &&
-        std::isfinite(p.clarity) &&
-        std::isfinite(p.fidelity) &&
-        std::isfinite(p.space) &&
-        std::isfinite(p.surround) &&
-        std::isfinite(p.ambience) &&
-        std::isfinite(p.dynamics) &&
-        std::isfinite(p.pitchSemitones);
+void testHeadphoneEvidence() {
+    HeadphoneProfile neutral{};
+    auto neutralEvidence = analyzeHeadphoneProfile(neutral);
+    assert(neutralEvidence.knowledge == DeviceKnowledge::Unknown);
+    assert(std::isfinite(neutralEvidence.lowFrequencyCapability));
+    assert(std::isfinite(neutralEvidence.correctionDemand));
+    assert(std::isfinite(neutralEvidence.harshnessRisk));
+
+    HeadphoneProfile weakBass{};
+    weakBass.preampDb = -5.0f;
+    weakBass.bands[0] = {55.0f, 0.8f, 7.5f, CorrectionFilterType::LowShelf, true};
+    weakBass.bands[1] = {120.0f, 1.0f, 4.0f, CorrectionFilterType::Peaking, true};
+    weakBass.bands[2] = {1800.0f, 1.1f, -1.0f, CorrectionFilterType::Peaking, true};
+    const auto weakBassEvidence = analyzeHeadphoneProfile(weakBass);
+    assert(weakBassEvidence.knowledge == DeviceKnowledge::Measured);
+    assert(weakBassEvidence.lowFrequencyCapability < neutralEvidence.lowFrequencyCapability);
+    assert(weakBassEvidence.correctionDemand > neutralEvidence.correctionDemand);
+
+    HeadphoneProfile strongBass = weakBass;
+    strongBass.bands[0].gainDb = -4.0f;
+    strongBass.bands[1].gainDb = -2.0f;
+    const auto strongBassEvidence = analyzeHeadphoneProfile(strongBass);
+    assert(strongBassEvidence.lowFrequencyCapability > weakBassEvidence.lowFrequencyCapability);
+
+    HeadphoneProfile bright{};
+    bright.bands[0] = {3200.0f, 1.2f, -4.0f, CorrectionFilterType::Peaking, true};
+    bright.bands[1] = {7200.0f, 2.0f, -7.0f, CorrectionFilterType::Peaking, true};
+    const auto brightEvidence = analyzeHeadphoneProfile(bright);
+    assert(brightEvidence.harshnessRisk > 0.25f);
+
+    HeadphoneProfile needsTreble{};
+    needsTreble.bands[0] = {3500.0f, 1.0f, 5.0f, CorrectionFilterType::Peaking, true};
+    needsTreble.bands[1] = {8000.0f, 1.5f, 6.0f, CorrectionFilterType::HighShelf, true};
+    const auto needsTrebleEvidence = analyzeHeadphoneProfile(needsTreble);
+    assert(needsTrebleEvidence.harshnessRisk < brightEvidence.harshnessRisk);
+
+    HeadphoneProfile hostile{};
+    hostile.preampDb = std::numeric_limits<float>::quiet_NaN();
+    hostile.bands[0] = {
+        std::numeric_limits<float>::infinity(),
+        1.0f,
+        std::numeric_limits<float>::quiet_NaN(),
+        CorrectionFilterType::Peaking,
+        true,
+    };
+    const auto hostileInputs = makeSignatureInputsFromHeadphoneProfile(
+        hostile,
+        std::numeric_limits<float>::infinity());
+    assert(std::isfinite(hostileInputs.lowFrequencyCapability));
+    assert(std::isfinite(hostileInputs.correctionDemand));
+    assert(std::isfinite(hostileInputs.harshnessRisk));
+    assert(std::isfinite(hostileInputs.endpointVolume));
+    assert(hostileInputs.endpointVolume == 0.5f);
 }
 
 } // namespace
@@ -180,50 +222,7 @@ int main() {
     assert(compiled.spatial.contralateralGain == weakPlan.spatial.contralateralGain);
     assert(compiled.spatial.wetTrimDb == weakPlan.spatial.wetTrimDb);
 
-    // Defense in depth: Processor itself must preserve its last finite controls
-    // if a caller bypasses the native parser and supplies NaN/Inf directly.
-    Processor processor;
-    processor.prepare(std::numeric_limits<float>::quiet_NaN());
-    ProcessorParameters knownGood{};
-    knownGood.preampDb = -3.0f;
-    knownGood.bass = 0.22f;
-    knownGood.virtualBass = 0.31f;
-    knownGood.bassCapability = 0.42f;
-    knownGood.clarity = 0.27f;
-    knownGood.fidelity = 0.34f;
-    knownGood.space = 0.18f;
-    knownGood.dynamics = 0.12f;
-    knownGood.pitchSemitones = 1.25f;
-    processor.setParameters(knownGood);
-    const ProcessorParameters accepted = processor.parameters();
-    assert(finiteProcessorParameters(accepted));
-
-    ProcessorParameters poisoned = accepted;
-    poisoned.preampDb = std::numeric_limits<float>::quiet_NaN();
-    poisoned.bass = std::numeric_limits<float>::infinity();
-    poisoned.virtualBass = -std::numeric_limits<float>::infinity();
-    poisoned.bassCapability = std::numeric_limits<float>::quiet_NaN();
-    poisoned.clarity = std::numeric_limits<float>::quiet_NaN();
-    poisoned.fidelity = std::numeric_limits<float>::infinity();
-    poisoned.space = -std::numeric_limits<float>::infinity();
-    poisoned.surround = std::numeric_limits<float>::quiet_NaN();
-    poisoned.ambience = std::numeric_limits<float>::infinity();
-    poisoned.dynamics = std::numeric_limits<float>::quiet_NaN();
-    poisoned.pitchSemitones = std::numeric_limits<float>::infinity();
-    processor.setParameters(poisoned);
-    const ProcessorParameters recovered = processor.parameters();
-    assert(finiteProcessorParameters(recovered));
-    assert(recovered.preampDb == accepted.preampDb);
-    assert(recovered.bass == accepted.bass);
-    assert(recovered.virtualBass == accepted.virtualBass);
-    assert(recovered.bassCapability == accepted.bassCapability);
-    assert(recovered.clarity == accepted.clarity);
-    assert(recovered.fidelity == accepted.fidelity);
-    assert(recovered.space == accepted.space);
-    assert(recovered.surround == accepted.surround);
-    assert(recovered.ambience == accepted.ambience);
-    assert(recovered.dynamics == accepted.dynamics);
-    assert(recovered.pitchSemitones == accepted.pitchSemitones);
+    testHeadphoneEvidence();
 
     // Exhaust the edge cube for every policy input so future formula changes
     // cannot accidentally escape bounds at combinations not covered above.

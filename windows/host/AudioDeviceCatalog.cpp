@@ -3,10 +3,12 @@
 #include "AudioDeviceCatalog.h"
 #include <Mmdeviceapi.h>
 #include <Windows.h>
+#include <endpointvolume.h>
 #include <functiondiscoverykeys_devpkey.h>
 #include <propvarutil.h>
 #include <wrl/client.h>
 #include <algorithm>
+#include <cmath>
 #include <cwctype>
 
 namespace pulsefx::windows {
@@ -120,6 +122,31 @@ std::wstring choosePhysicalOutputId(const std::wstring& preferredId) {
         if (!device.isPulseFx) return device.id;
     }
     return {};
+}
+
+float endpointVolumeScalar(const std::wstring& requestedDeviceId, float fallback) noexcept {
+    fallback = std::isfinite(fallback) ? std::clamp(fallback, 0.0f, 1.0f) : 0.5f;
+    if (requestedDeviceId.empty()) return fallback;
+
+    ScopedComInit com;
+    if (!com.usable()) return fallback;
+
+    ComPtr<IMMDeviceEnumerator> enumerator;
+    if (FAILED(CoCreateInstance(
+            __uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+            IID_PPV_ARGS(enumerator.GetAddressOf())))) return fallback;
+
+    ComPtr<IMMDevice> device;
+    if (FAILED(enumerator->GetDevice(requestedDeviceId.c_str(), device.GetAddressOf()))) return fallback;
+
+    ComPtr<IAudioEndpointVolume> endpointVolume;
+    if (FAILED(device->Activate(
+            __uuidof(IAudioEndpointVolume), CLSCTX_ALL, nullptr,
+            reinterpret_cast<void**>(endpointVolume.GetAddressOf())))) return fallback;
+
+    float volume = fallback;
+    if (FAILED(endpointVolume->GetMasterVolumeLevelScalar(&volume)) || !std::isfinite(volume)) return fallback;
+    return std::clamp(volume, 0.0f, 1.0f);
 }
 
 std::string utf8FromWide(const std::wstring& value) {

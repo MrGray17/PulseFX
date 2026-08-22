@@ -5,10 +5,13 @@
 #include "HeadphoneProfileCommand.h"
 #include "HostProtocol.h"
 #include "../relay/WasapiRelay.h"
+#include "pulsefx/SignatureControls.h"
+#include "pulsefx/SignatureDeviceAnalysis.h"
 #include <Windows.h>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <iostream>
 #include <mutex>
@@ -41,14 +44,34 @@ std::string quoted(const std::string& value) {
     return "\"" + jsonEscape(value) + "\"";
 }
 
+enum class ProcessingMode {
+    Signature,
+    Manual,
+};
+
+const char* processingModeName(ProcessingMode mode) noexcept {
+    return mode == ProcessingMode::Signature ? "signature" : "manual";
+}
+
+const char* knowledgeName(DeviceKnowledge knowledge) noexcept {
+    switch (knowledge) {
+        case DeviceKnowledge::Measured: return "measured";
+        case DeviceKnowledge::Personalized: return "personalized";
+        case DeviceKnowledge::Unknown: break;
+    }
+    return "unknown";
+}
+
 class PulseFxHost {
 public:
     PulseFxHost() {
-        control_.processor.bypass = false;
-        control_.processor.fidelity = 0.42f;
-        control_.processor.space = 0.34f;
-        control_.processor.dynamics = 0.20f;
-        control_.processor.pitchSemitones = 0.0f;
+        manualControl_.processor.bypass = false;
+        manualControl_.processor.fidelity = 0.42f;
+        manualControl_.processor.space = 0.34f;
+        manualControl_.processor.dynamics = 0.20f;
+        manualControl_.processor.pitchSemitones = 0.0f;
+        control_ = manualControl_;
+        applySignatureLocked(0.5f, false);
     }
 
     ~PulseFxHost() { stop(); }
@@ -81,6 +104,7 @@ public:
             stopRequested_.store(true, std::memory_order_release);
             return ackJson("quit");
         }
+        if (command.name == "mode") return handleModeLocked(command);
         if (command.name == "output") return handleOutputLocked(command);
         if (command.name == "enabled") return handleBoolControlLocked(command, "enabled");
         if (command.name == "night") return handleBoolControlLocked(command, "night");
@@ -98,6 +122,42 @@ public:
     }
 
 private:
+    void pushControlLocked() {
+        relay_.updateControlState(control_);
+    }
+
+    void activateManualLocked() {
+        mode_ = ProcessingMode::Manual;
+        control_ = manualControl_;
+    }
+
+    void applySignatureLocked(float endpointVolume, bool push) {
+        SignatureInputs inputs = makeSignatureInputsFromHeadphoneProfile(
+            manualControl_.headphoneProfile,
+            endpointVolume);
+        inputs.content = ContentClass::General;
+        inputs.lowLatency = false;
+
+        const auto compiled = compileSignatureControls(inputs, manualControl_.processor);
+        ApoControlState next = manualControl_;
+        next.processor = compiled.processor;
+        // Signature owns enhancement, not user tone shaping. Manual EQ is kept
+        // intact in manualControl_ so switching back to Manual restores it.
+        next.eqDb.fill(0.0f);
+        control_ = next;
+        signatureInputs_ = inputs;
+        signaturePlan_ = makeAdaptiveSignature(inputs);
+        lastSignatureEndpointVolume_ = inputs.endpointVolume;
+        if (push) pushControlLocked();
+    }
+
+    void refreshSignatureForCurrentOutputLocked() {
+        if (mode_ != ProcessingMode::Signature || destinationId_.empty()) return;
+        const float volume = endpointVolumeScalar(destinationId_, lastSignatureEndpointVolume_);
+        if (std::abs(volume - lastSignatureEndpointVolume_) < 0.04f) return;
+        applySignatureLocked(volume, true);
+    }
+
     bool ensureRelayLocked() {
         const std::wstring nextSource = findPulseFxOutputId();
         if (nextSource.empty()) {
@@ -128,9 +188,18 @@ private:
             return false;
         }
 
-        if (relay_.running() && sourceId_ == nextSource && destinationId_ == nextDestination) return true;
+        if (relay_.running() && sourceId_ == nextSource && destinationId_ == nextDestination) {
+            refreshSignatureForCurrentOutputLocked();
+            return true;
+        }
 
         relay_.stop();
+        if (mode_ == ProcessingMode::Signature) {
+            applySignatureLocked(
+                endpointVolumeScalar(nextDestination, lastSignatureEndpointVolume_),
+                false);
+        }
+
         RelayConfig config;
         config.processInRelay = true;
         config.control = control_;
@@ -161,8 +230,22 @@ private:
         }
     }
 
-    void pushControlLocked() {
-        relay_.updateControlState(control_);
+    std::string handleModeLocked(const HostCommand& command) {
+        if (command.args.size() != 1) return errorJson("mode expects signature or manual");
+        if (command.args[0] == "signature") {
+            mode_ = ProcessingMode::Signature;
+            const float volume = destinationId_.empty()
+                ? lastSignatureEndpointVolume_
+                : endpointVolumeScalar(destinationId_, lastSignatureEndpointVolume_);
+            applySignatureLocked(volume, true);
+            return ackJson("mode");
+        }
+        if (command.args[0] == "manual") {
+            activateManualLocked();
+            pushControlLocked();
+            return ackJson("mode");
+        }
+        return errorJson("mode expects signature or manual");
     }
 
     std::string handleOutputLocked(const HostCommand& command) {
@@ -186,11 +269,26 @@ private:
         bool value = false;
         if (!parseBool(command.args[0], value)) return errorJson("invalid boolean value");
         const std::string name(controlName);
-        if (name == "enabled") control_.processor.bypass = !value;
-        else if (name == "night") control_.processor.nightMode = value;
-        else if (name == "headphone_enable") control_.headphoneCorrectionEnabled = value;
-        pushControlLocked();
-        return ackJson(name);
+
+        if (name == "enabled") {
+            manualControl_.processor.bypass = !value;
+            control_.processor.bypass = !value;
+            pushControlLocked();
+            return ackJson(name);
+        }
+        if (name == "headphone_enable") {
+            manualControl_.headphoneCorrectionEnabled = value;
+            control_.headphoneCorrectionEnabled = value;
+            pushControlLocked();
+            return ackJson(name);
+        }
+        if (name == "night") {
+            manualControl_.processor.nightMode = value;
+            activateManualLocked();
+            pushControlLocked();
+            return ackJson(name);
+        }
+        return errorJson("unknown boolean control");
     }
 
     std::string handleFloatControlLocked(const HostCommand& command) {
@@ -198,20 +296,27 @@ private:
         float value = 0.0f;
         if (!parseFiniteFloat(command.args[0], value)) return errorJson("invalid numeric value");
 
+        if (command.name == "pitch") {
+            value = std::clamp(value, -5.0f, 5.0f);
+            manualControl_.processor.pitchSemitones = value;
+            control_.processor.pitchSemitones = value;
+            pushControlLocked();
+            return ackJson(command.name);
+        }
+
         if (command.name == "preamp") {
-            control_.processor.preampDb = std::clamp(value, -18.0f, 9.0f);
-        } else if (command.name == "pitch") {
-            control_.processor.pitchSemitones = std::clamp(value, -5.0f, 5.0f);
+            manualControl_.processor.preampDb = std::clamp(value, -18.0f, 9.0f);
         } else {
             value = std::clamp(value, 0.0f, 1.0f);
-            if (command.name == "bass") control_.processor.bass = value;
-            else if (command.name == "clarity") control_.processor.clarity = value;
-            else if (command.name == "fidelity") control_.processor.fidelity = value;
-            else if (command.name == "spatial") control_.processor.space = value;
-            else if (command.name == "surround") control_.processor.surround = value;
-            else if (command.name == "ambience") control_.processor.ambience = value;
-            else if (command.name == "dynamics") control_.processor.dynamics = value;
+            if (command.name == "bass") manualControl_.processor.bass = value;
+            else if (command.name == "clarity") manualControl_.processor.clarity = value;
+            else if (command.name == "fidelity") manualControl_.processor.fidelity = value;
+            else if (command.name == "spatial") manualControl_.processor.space = value;
+            else if (command.name == "surround") manualControl_.processor.surround = value;
+            else if (command.name == "ambience") manualControl_.processor.ambience = value;
+            else if (command.name == "dynamics") manualControl_.processor.dynamics = value;
         }
+        activateManualLocked();
         pushControlLocked();
         return ackJson(command.name);
     }
@@ -220,10 +325,11 @@ private:
         if (command.args.size() != 2) return errorJson("eq expects band index and gain dB");
         std::uint32_t band = 0;
         float gain = 0.0f;
-        if (!parseUint32(command.args[0], band) || band >= control_.eqDb.size() || !parseFiniteFloat(command.args[1], gain)) {
+        if (!parseUint32(command.args[0], band) || band >= manualControl_.eqDb.size() || !parseFiniteFloat(command.args[1], gain)) {
             return errorJson("invalid EQ band or gain");
         }
-        control_.eqDb[band] = std::clamp(gain, -12.0f, 12.0f);
+        manualControl_.eqDb[band] = std::clamp(gain, -12.0f, 12.0f);
+        activateManualLocked();
         pushControlLocked();
         return ackJson("eq");
     }
@@ -231,11 +337,19 @@ private:
     std::string handleHeadphoneProfileLocked(const HostCommand& command) {
         // Parse into a copy first. Malformed remote/profile data can never leave
         // half of a new filter bank active on the realtime thread.
-        ApoControlState next = control_;
+        ApoControlState next = manualControl_;
         std::string error;
         if (!applyHeadphoneProfileArgs(command.args, next, error)) return errorJson(error);
-        control_ = next;
-        pushControlLocked();
+        manualControl_ = next;
+        if (mode_ == ProcessingMode::Signature) {
+            const float volume = destinationId_.empty()
+                ? lastSignatureEndpointVolume_
+                : endpointVolumeScalar(destinationId_, lastSignatureEndpointVolume_);
+            applySignatureLocked(volume, true);
+        } else {
+            control_ = manualControl_;
+            pushControlLocked();
+        }
         return ackJson("headphone_profile");
     }
 
@@ -306,8 +420,23 @@ private:
             << ",\"preferredDestinationId\":" << quoted(utf8FromWide(preferredDestinationId_))
             << ",\"error\":" << quoted(effectiveError)
             << ",\"controls\":{"
+            << "\"mode\":" << quoted(processingModeName(mode_)) << ','
             << "\"enabled\":" << (!control_.processor.bypass ? "true" : "false") << ','
-            << "\"pitchSemitones\":" << control_.processor.pitchSemitones
+            << "\"pitchSemitones\":" << control_.processor.pitchSemitones << ','
+            << "\"preampDb\":" << control_.processor.preampDb << ','
+            << "\"bass\":" << control_.processor.bass << ','
+            << "\"virtualBass\":" << control_.processor.virtualBass << ','
+            << "\"clarity\":" << control_.processor.clarity << ','
+            << "\"fidelity\":" << control_.processor.fidelity << ','
+            << "\"surround\":" << control_.processor.surround << ','
+            << "\"dynamics\":" << control_.processor.dynamics
+            << "},\"signature\":{"
+            << "\"knowledge\":" << quoted(knowledgeName(signatureInputs_.knowledge)) << ','
+            << "\"lowFrequencyCapability\":" << signatureInputs_.lowFrequencyCapability << ','
+            << "\"correctionDemand\":" << signatureInputs_.correctionDemand << ','
+            << "\"harshnessRisk\":" << signatureInputs_.harshnessRisk << ','
+            << "\"endpointVolume\":" << signatureInputs_.endpointVolume << ','
+            << "\"plannedSurround\":" << signaturePlan_.surround
             << "},\"stats\":{"
             << "\"underruns\":" << stats.underruns << ','
             << "\"overruns\":" << stats.overruns << ','
@@ -330,7 +459,12 @@ private:
 
     mutable std::mutex mutex_;
     WasapiRelay relay_{};
+    ApoControlState manualControl_{};
     ApoControlState control_{};
+    ProcessingMode mode_{ProcessingMode::Signature};
+    SignatureInputs signatureInputs_{};
+    SignaturePlan signaturePlan_{};
+    float lastSignatureEndpointVolume_{0.5f};
     std::wstring sourceId_{};
     std::wstring destinationId_{};
     std::wstring preferredDestinationId_{};
