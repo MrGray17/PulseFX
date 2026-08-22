@@ -1,6 +1,7 @@
 #ifdef _WIN32
 
 #include "AudioDeviceCatalog.h"
+#include <Audioclient.h>
 #include <Mmdeviceapi.h>
 #include <Windows.h>
 #include <endpointvolume.h>
@@ -147,6 +148,33 @@ float endpointVolumeScalar(const std::wstring& requestedDeviceId, float fallback
     float volume = fallback;
     if (FAILED(endpointVolume->GetMasterVolumeLevelScalar(&volume)) || !std::isfinite(volume)) return fallback;
     return std::clamp(volume, 0.0f, 1.0f);
+}
+
+std::uint32_t renderDeviceSampleRate(const std::wstring& requestedDeviceId) noexcept {
+    if (requestedDeviceId.empty()) return 0;
+
+    ScopedComInit com;
+    if (!com.usable()) return 0;
+
+    ComPtr<IMMDeviceEnumerator> enumerator;
+    if (FAILED(CoCreateInstance(
+            __uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+            IID_PPV_ARGS(enumerator.GetAddressOf())))) return 0;
+
+    ComPtr<IMMDevice> device;
+    if (FAILED(enumerator->GetDevice(requestedDeviceId.c_str(), device.GetAddressOf()))) return 0;
+
+    ComPtr<IAudioClient> client;
+    if (FAILED(device->Activate(
+            __uuidof(IAudioClient), CLSCTX_ALL, nullptr,
+            reinterpret_cast<void**>(client.GetAddressOf())))) return 0;
+
+    WAVEFORMATEX* format = nullptr;
+    if (FAILED(client->GetMixFormat(&format)) || !format) return 0;
+    const DWORD rate = format->nSamplesPerSec;
+    CoTaskMemFree(format);
+    if (rate < 8000 || rate > 384000) return 0;
+    return static_cast<std::uint32_t>(rate);
 }
 
 std::string utf8FromWide(const std::wstring& value) {

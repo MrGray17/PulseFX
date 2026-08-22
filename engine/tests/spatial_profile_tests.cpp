@@ -1,3 +1,4 @@
+#include "pulsefx/SignatureSpatialProfileBank.h"
 #include "pulsefx/SpatialProfileTuning.h"
 #include "pulsefx/SpatialSurround.h"
 #include <cassert>
@@ -18,16 +19,21 @@ std::size_t firstMeaningfulTap(const std::array<float, pulsefx::HrtfProfile::kMa
     return taps;
 }
 
+bool sameProfile(const pulsefx::HrtfProfile& a, const pulsefx::HrtfProfile& b) {
+    if (a.taps != b.taps) return false;
+    for (std::size_t index = 0; index < a.taps; ++index) {
+        if (!near(a.leftToLeft[index], b.leftToLeft[index]) ||
+            !near(a.leftToRight[index], b.leftToRight[index]) ||
+            !near(a.rightToLeft[index], b.rightToLeft[index]) ||
+            !near(a.rightToRight[index], b.rightToRight[index])) return false;
+    }
+    return true;
+}
+
 void testNeutralPreservesProfile() {
     const auto base = pulsefx::SpatialSurround::makeDefaultProfile(48000.0f);
     const auto tuned = pulsefx::tuneSpatialProfile(base, {});
-    assert(tuned.taps == base.taps);
-    for (std::size_t index = 0; index < base.taps; ++index) {
-        assert(near(tuned.leftToLeft[index], base.leftToLeft[index]));
-        assert(near(tuned.leftToRight[index], base.leftToRight[index]));
-        assert(near(tuned.rightToLeft[index], base.rightToLeft[index]));
-        assert(near(tuned.rightToRight[index], base.rightToRight[index]));
-    }
+    assert(sameProfile(tuned, base));
 }
 
 void testItdScaleMovesContralateralDelay() {
@@ -100,6 +106,60 @@ void testPathologicalProfileGetsEnergyCapped() {
     assert(rightEarL1 <= 2.0001f);
 }
 
+void testSignatureProfileBankUsesExactRateAndStableRevisions() {
+    pulsefx::SignatureSpatialProfileBank bank;
+    assert(!bank.valid());
+    assert(!bank.update(std::numeric_limits<float>::quiet_NaN(), {}));
+    assert(!bank.valid());
+
+    // Neutral Signature tuning must be mathematically identical to the manual
+    // fallback at the exact stream rate, not a hard-coded 48 kHz approximation.
+    assert(bank.update(44100.0f, {}));
+    assert(bank.valid());
+    assert(near(bank.sampleRate(), 44100.0f));
+    assert(bank.manualRevision() != 0 && bank.signatureRevision() != 0);
+    assert(bank.manualRevision() != bank.signatureRevision());
+    const auto manual441 = pulsefx::SpatialSurround::makeDefaultProfile(44100.0f);
+    assert(sameProfile(bank.manualProfile(), manual441));
+    assert(sameProfile(bank.signatureProfile(), manual441));
+
+    const auto manualRevision = bank.manualRevision();
+    const auto signatureRevision = bank.signatureRevision();
+    assert(!bank.update(44100.0f, {}));
+    assert(bank.manualRevision() == manualRevision);
+    assert(bank.signatureRevision() == signatureRevision);
+
+    pulsefx::SpatialProfileTuning expansive{};
+    expansive.itdScale = 1.12f;
+    expansive.ipsilateralGain = 1.02f;
+    expansive.contralateralGain = 0.82f;
+    expansive.wetTrimDb = -0.8f;
+    assert(bank.update(48000.0f, expansive));
+    assert(near(bank.sampleRate(), 48000.0f));
+    assert(bank.manualRevision() != manualRevision);
+    assert(bank.signatureRevision() != signatureRevision);
+    const auto base48 = pulsefx::SpatialSurround::makeDefaultProfile(48000.0f);
+    assert(sameProfile(bank.manualProfile(), base48));
+    assert(!sameProfile(bank.signatureProfile(), bank.manualProfile()));
+    assert(firstMeaningfulTap(bank.signatureProfile().leftToRight, bank.signatureProfile().taps) >=
+        firstMeaningfulTap(bank.manualProfile().leftToRight, bank.manualProfile().taps));
+
+    const auto cross48 = firstMeaningfulTap(bank.manualProfile().leftToRight, bank.manualProfile().taps);
+    assert(bank.update(96000.0f, expansive));
+    const auto base96 = pulsefx::SpatialSurround::makeDefaultProfile(96000.0f);
+    assert(sameProfile(bank.manualProfile(), base96));
+    const auto cross96 = firstMeaningfulTap(bank.manualProfile().leftToRight, bank.manualProfile().taps);
+    assert(cross96 > cross48);
+
+    // Invalid updates fail open and preserve the last valid published profiles.
+    const auto stableManualRevision = bank.manualRevision();
+    const auto stableSignatureRevision = bank.signatureRevision();
+    assert(!bank.update(1000.0f, expansive));
+    assert(bank.manualRevision() == stableManualRevision);
+    assert(bank.signatureRevision() == stableSignatureRevision);
+    assert(near(bank.sampleRate(), 96000.0f));
+}
+
 } // namespace
 
 int main() {
@@ -109,5 +169,6 @@ int main() {
     testInvalidTuningFallsBackAndClamps();
     testNonFiniteHrirSamplesCannotEscape();
     testPathologicalProfileGetsEnergyCapped();
+    testSignatureProfileBankUsesExactRateAndStableRevisions();
     return 0;
 }

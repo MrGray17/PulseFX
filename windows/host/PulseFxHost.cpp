@@ -7,6 +7,7 @@
 #include "../relay/WasapiRelay.h"
 #include "pulsefx/SignatureControls.h"
 #include "pulsefx/SignatureDeviceAnalysis.h"
+#include "pulsefx/SignatureSpatialProfileBank.h"
 #include <Windows.h>
 #include <algorithm>
 #include <atomic>
@@ -71,7 +72,7 @@ public:
         manualControl_.processor.dynamics = 0.20f;
         manualControl_.processor.pitchSemitones = 0.0f;
         control_ = manualControl_;
-        applySignatureLocked(0.5f, false);
+        applySignatureLocked(0.5f, 0, false);
     }
 
     ~PulseFxHost() { stop(); }
@@ -131,7 +132,35 @@ private:
         control_ = manualControl_;
     }
 
-    void applySignatureLocked(float endpointVolume, bool push) {
+    void clearSpatialPublicationLocked() noexcept {
+        publishedSpatialSampleRate_ = 0;
+        manualControl_.spatialProfileRevision = 0;
+        control_.spatialProfileRevision = 0;
+    }
+
+    void syncSpatialProfilesLocked(
+        std::uint32_t sampleRate,
+        const SpatialProfileTuning& signatureTuning) {
+        if (sampleRate == 0) return;
+        spatialProfiles_.update(static_cast<float>(sampleRate), signatureTuning);
+        if (!spatialProfiles_.valid() ||
+            static_cast<std::uint32_t>(std::lround(spatialProfiles_.sampleRate())) != sampleRate) return;
+
+        manualControl_.spatialProfile = spatialProfiles_.manualProfile();
+        manualControl_.spatialProfileRevision = spatialProfiles_.manualRevision();
+        publishedSpatialSampleRate_ = sampleRate;
+    }
+
+    std::uint32_t activeSourceSampleRateLocked() const noexcept {
+        if (sourceId_.empty()) return 0;
+        const auto resolved = renderDeviceSampleRate(sourceId_);
+        return resolved != 0 ? resolved : publishedSpatialSampleRate_;
+    }
+
+    void applySignatureLocked(
+        float endpointVolume,
+        std::uint32_t sampleRate,
+        bool push) {
         SignatureInputs inputs = makeSignatureInputsFromHeadphoneProfile(
             manualControl_.headphoneProfile,
             endpointVolume);
@@ -139,11 +168,21 @@ private:
         inputs.lowLatency = false;
 
         const auto compiled = compileSignatureControls(inputs, manualControl_.processor);
+        syncSpatialProfilesLocked(sampleRate, compiled.spatial);
+
         ApoControlState next = manualControl_;
         next.processor = compiled.processor;
         // Signature owns enhancement, not user tone shaping. Manual EQ is kept
         // intact in manualControl_ so switching back to Manual restores it.
         next.eqDb.fill(0.0f);
+        if (spatialProfiles_.valid() && publishedSpatialSampleRate_ != 0) {
+            next.spatialProfile = spatialProfiles_.signatureProfile();
+            next.spatialProfileRevision = spatialProfiles_.signatureRevision();
+        } else {
+            // Never publish a stale profile for a stream rate we could not
+            // resolve. A fresh bridge then keeps its own rate-correct default.
+            next.spatialProfileRevision = 0;
+        }
         control_ = next;
         signatureInputs_ = inputs;
         signaturePlan_ = makeAdaptiveSignature(inputs);
@@ -154,8 +193,10 @@ private:
     void refreshSignatureForCurrentOutputLocked() {
         if (mode_ != ProcessingMode::Signature || destinationId_.empty()) return;
         const float volume = endpointVolumeScalar(destinationId_, lastSignatureEndpointVolume_);
-        if (std::abs(volume - lastSignatureEndpointVolume_) < 0.04f) return;
-        applySignatureLocked(volume, true);
+        const auto sampleRate = activeSourceSampleRateLocked();
+        const bool rateChanged = sampleRate != 0 && sampleRate != publishedSpatialSampleRate_;
+        if (std::abs(volume - lastSignatureEndpointVolume_) < 0.04f && !rateChanged) return;
+        applySignatureLocked(volume, sampleRate, true);
     }
 
     bool ensureRelayLocked() {
@@ -164,6 +205,7 @@ private:
             relay_.stop();
             sourceId_.clear();
             destinationId_.clear();
+            clearSpatialPublicationLocked();
             lastError_ = "PulseFX Output is not installed or active";
             return false;
         }
@@ -193,11 +235,23 @@ private:
             return true;
         }
 
+        const std::uint32_t nextSampleRate = renderDeviceSampleRate(nextSource);
         relay_.stop();
+        if (nextSampleRate == 0) {
+            // A new relay must never inherit an HRTF designed for an old stream
+            // rate. Revision zero lets the freshly prepared bridge use its own
+            // exact-rate default until the control thread can resolve the mix.
+            clearSpatialPublicationLocked();
+        }
+
         if (mode_ == ProcessingMode::Signature) {
             applySignatureLocked(
                 endpointVolumeScalar(nextDestination, lastSignatureEndpointVolume_),
+                nextSampleRate,
                 false);
+        } else {
+            syncSpatialProfilesLocked(nextSampleRate, signaturePlan_.spatial);
+            control_ = manualControl_;
         }
 
         RelayConfig config;
@@ -237,10 +291,11 @@ private:
             const float volume = destinationId_.empty()
                 ? lastSignatureEndpointVolume_
                 : endpointVolumeScalar(destinationId_, lastSignatureEndpointVolume_);
-            applySignatureLocked(volume, true);
+            applySignatureLocked(volume, activeSourceSampleRateLocked(), true);
             return ackJson("mode");
         }
         if (command.args[0] == "manual") {
+            syncSpatialProfilesLocked(activeSourceSampleRateLocked(), signaturePlan_.spatial);
             activateManualLocked();
             pushControlLocked();
             return ackJson("mode");
@@ -345,7 +400,7 @@ private:
             const float volume = destinationId_.empty()
                 ? lastSignatureEndpointVolume_
                 : endpointVolumeScalar(destinationId_, lastSignatureEndpointVolume_);
-            applySignatureLocked(volume, true);
+            applySignatureLocked(volume, activeSourceSampleRateLocked(), true);
         } else {
             control_ = manualControl_;
             pushControlLocked();
@@ -436,7 +491,11 @@ private:
             << "\"correctionDemand\":" << signatureInputs_.correctionDemand << ','
             << "\"harshnessRisk\":" << signatureInputs_.harshnessRisk << ','
             << "\"endpointVolume\":" << signatureInputs_.endpointVolume << ','
-            << "\"plannedSurround\":" << signaturePlan_.surround
+            << "\"plannedSurround\":" << signaturePlan_.surround << ','
+            << "\"spatialSampleRate\":" << publishedSpatialSampleRate_ << ','
+            << "\"spatialProfileRevision\":" << control_.spatialProfileRevision << ','
+            << "\"itdScale\":" << signaturePlan_.spatial.itdScale << ','
+            << "\"contralateralGain\":" << signaturePlan_.spatial.contralateralGain
             << "},\"stats\":{"
             << "\"underruns\":" << stats.underruns << ','
             << "\"overruns\":" << stats.overruns << ','
@@ -464,7 +523,9 @@ private:
     ProcessingMode mode_{ProcessingMode::Signature};
     SignatureInputs signatureInputs_{};
     SignaturePlan signaturePlan_{};
+    SignatureSpatialProfileBank spatialProfiles_{};
     float lastSignatureEndpointVolume_{0.5f};
+    std::uint32_t publishedSpatialSampleRate_{0};
     std::wstring sourceId_{};
     std::wstring destinationId_{};
     std::wstring preferredDestinationId_{};
