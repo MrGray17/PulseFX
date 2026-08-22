@@ -97,6 +97,42 @@ void testBassRemainsCenteredForAsymmetricInput() {
     }
 }
 
+void testControlToggleIsRamped() {
+    constexpr float sampleRate = 48000.0f;
+    pulsefx::VirtualBassEnhancer enhancer;
+    enhancer.prepare(sampleRate);
+    enhancer.setBassCapability(0.0f);
+    enhancer.setAmount(0.0f);
+
+    // Let capability settle while synthesis is muted, then toggle amount during
+    // a continuous bass tone. Compare the synthesized component itself so the
+    // normal slope of the source sinusoid cannot masquerade as a click.
+    for (int index = 0; index < 6000; ++index) {
+        const float source = 0.30f * std::sin(2.0f * kPi * 80.0f * static_cast<float>(index) / sampleRate);
+        float left = source;
+        float right = source;
+        enhancer.processStereo(left, right);
+    }
+
+    enhancer.setAmount(1.0f);
+    float previousAdded = 0.0f;
+    float largestAddedStep = 0.0f;
+    float lateAddedPeak = 0.0f;
+    for (int index = 0; index < 6000; ++index) {
+        const float source = 0.30f * std::sin(2.0f * kPi * 80.0f * static_cast<float>(index + 6000) / sampleRate);
+        float left = source;
+        float right = source;
+        enhancer.processStereo(left, right);
+        const float added = left - source;
+        if (index > 0) largestAddedStep = std::max(largestAddedStep, std::abs(added - previousAdded));
+        if (index > 4000) lateAddedPeak = std::max(lateAddedPeak, std::abs(added));
+        previousAdded = added;
+    }
+
+    assert(lateAddedPeak > 1.0e-4f);
+    assert(largestAddedStep < 0.004f);
+}
+
 void testInvalidInputsCannotProduceNonFiniteOutput() {
     pulsefx::VirtualBassEnhancer enhancer;
     enhancer.prepare(48000.0f);
@@ -121,6 +157,7 @@ int main() {
     testCapableTransducerIsTransparent();
     testLimitedTransducerAddsSecondHarmonic();
     testBassRemainsCenteredForAsymmetricInput();
+    testControlToggleIsRamped();
     testInvalidInputsCannotProduceNonFiniteOutput();
     return 0;
 }
