@@ -119,11 +119,11 @@ test('Diagnostics renders native stream, latency, limiter, governor and dropout 
   await page.getByRole('button', { name: 'Open Adaptive Tools' }).click();
   await page.getByRole('button', { name: 'Diagnostics' }).click();
 
-  await expect(page.getByText('48,000 Hz')).toBeVisible();
-  await expect(page.getByText('5.0 ms')).toBeVisible();
-  await expect(page.getByText('25.0 ms')).toBeVisible();
-  await expect(page.getByText('0.42 dB')).toBeVisible();
-  await expect(page.getByText('18%')).toBeVisible();
-  await expect(page.getByText('100% wet')).toBeVisible();
-  await expect(page.getByText('0 under · 0 over')).toBeVisible();
+  await expect(page.getByText('48,000 Hz', { exact: true })).toBeVisible();
+  await expect(page.getByText('5.0 ms', { exact: true })).toBeVisible();
+  await expect(page.getByText('25.0 ms', { exact: true })).toBeVisible();
+  await expect(page.getByText('0.42 dB', { exact: true })).toBeVisible();
+  await expect(page.getByText('18%', { exact: true })).toBeVisible();
+  await expect(page.getByText('100% wet', { exact: true })).toBeVisible();
+  await expect(page.getByText('0 under · 0 over', { exact: true })).toBeVisible();
 });
