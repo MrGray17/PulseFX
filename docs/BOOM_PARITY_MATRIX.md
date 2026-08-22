@@ -46,16 +46,16 @@ Legend:
 | Persistent settings | ✅ | 🧪 desktop build + bounded native protocol | 🖥️ restart/update/uninstall behavior |
 | System tray Quick Controls | ✅ | 🧪 desktop syntax/build | 🖥️ tray lifecycle and fresh-window action delivery |
 | Assignable global hotkeys | ✅ | 🧪 desktop syntax/build | 🖥️ OS-reserved/conflicting accelerator behavior |
-| Local audio player | ✅ | 🧪 desktop build/CSP | 🖥️ codec matrix and file-association launch path |
+| Local audio player | ✅ | 🧪 desktop build/CSP | 🖥️ codec matrix |
 | Named playlists | ✅ persisted | 🧪 desktop build | 🖥️ large-library/restart behavior |
 | Internet radio playback | ✅ Radio Browser-backed | 🧪 URL/station sanitization | 🖥️ live stream codec/drop/reconnect matrix |
-| Radio search | ✅ | 🧪 sanitizer/service | 🖥️ international search behavior |
-| Radio Local / Country / Popular browsing | 🚧 | — | Implement category navigation to match Boom player flow |
-| Register as Windows audio-file handler | ✅ installer associations | 🧪 NSIS build gate | 🖥️ command-line/file-open handoff is still incomplete |
-| Set as Windows default player UX | 🚧 | — | Implement app-side handoff to Windows Default Apps settings and associated-file launch handling |
+| Radio search | ✅ | 🧪 sanitizer/service + renderer | 🖥️ international search behavior |
+| Radio Local / Country / Popular browsing | ✅ OS-locale Local + ISO Country + top-voted Popular | 🧪 API-path validation + renderer interaction test | 🖥️ live network/country behavior |
+| Register as Windows audio-file handler | ✅ installer associations + cold/warm single-instance file handoff | 🧪 parser + cold hydration/autoplay browser regression + NSIS build gate | 🖥️ Explorer/default-app handoff on clean Windows install |
+| Set as Windows default player UX | ✅ opens the official Windows Default Apps settings surface for user choice | 🧪 desktop bridge + renderer interaction test | 🖥️ choose PulseFX in Windows Settings and verify associations |
 | x64 native app + driver installer | ✅ pipeline defined | 🧪 CI package job | 🔐 production driver trust + 🖥️ clean-machine install |
 | ARM64 native app + driver installer | ✅ pipeline defined | 🧪 CI package job | 🔐 production driver trust + 🖥️ ARM64 hardware install |
-| Virtual-driver install from NSIS | ✅ PnPUtil custom install path | 🧪 installer compilation | 🔐 release-signed driver package required; setup intentionally aborts if Windows rejects it |
+| Virtual-driver install from NSIS | ✅ SetupAPI devnode creation + PnPUtil binding + bounded health verification | 🧪 helper/native tests + installer compilation | 🔐 release-signed driver package required; setup intentionally aborts if Windows rejects it |
 | Kernel-policy release signature verification | ✅ `verify-release-signature.ps1` | — | 🔐 Microsoft/production signing process must supply trusted package |
 | True-peak output protection | ✅ | 🧪 inter-sample peak tests | 🎧 compare Boom headroom/limiter character |
 | Audio host crash recovery/watchdog | ✅ | 🧪 native/desktop build | 🖥️ forced-kill and long-run recovery |
@@ -75,4 +75,4 @@ PulseFX may only use that phrase for a tested configuration when all of the foll
 5. The corresponding system/device lifecycle tests pass without dropouts, dead routing, unsafe peaks, or recovery failures.
 6. The Windows release driver passes kernel-policy signature verification and installs on a normal Secure-Boot-enabled machine without weakening OS security.
 
-Until those gates pass, the correct claim is **feature parity in progress**, not exact proprietary-DSP equivalence.
+Until those gates pass, the correct claim is **feature parity implemented, release proof pending**, not exact proprietary-DSP equivalence.
