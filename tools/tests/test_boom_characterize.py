@@ -44,12 +44,13 @@ class BoomCharacterizeTests(unittest.TestCase):
         frames = [(0.0, 0.0)] * (rate * 3)
         event = round(0.5 * rate)
         frames[event + 48] = (0.8, 0.0)
-        frames[event + 72] = (0.8, 0.2)
+        frames[event + 72] = (0.7, 0.2)
         capture = audio_lab.Audio(rate, 2, frames)
         metadata = {'events': [{'name': 'left', 'time_s': 0.5}]}
         result = boom_characterize.characterize_stereo_impulses(capture, metadata)['events']['left']
-        self.assertAlmostEqual(result['left_delay_ms'], 1.5, delta=0.05)
+        self.assertAlmostEqual(result['left_delay_ms'], 1.0, delta=0.05)
         self.assertAlmostEqual(result['right_delay_ms'], 1.5, delta=0.05)
+        self.assertAlmostEqual(result['interaural_peak_delay_ms'], 0.5, delta=0.05)
         self.assertLess(result['right_minus_left_peak_db'], -10.0)
 
     def test_identical_profiles_compare_to_zero(self) -> None:
