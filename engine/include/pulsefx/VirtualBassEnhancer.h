@@ -13,16 +13,20 @@ public:
     void reset() noexcept;
     void processStereo(float& left, float& right) noexcept;
 
-    float amount() const noexcept { return amount_; }
-    float bassCapability() const noexcept { return bassCapability_; }
+    float amount() const noexcept { return amountTarget_; }
+    float bassCapability() const noexcept { return bassCapabilityTarget_; }
 
 private:
     float processLowBand(float mono) noexcept;
     float processHarmonics(float lowBand) noexcept;
+    void smoothControls() noexcept;
 
     float sampleRate_{48000.0f};
-    float amount_{0.0f};
-    float bassCapability_{1.0f};
+    float amountTarget_{0.0f};
+    float amountCurrent_{0.0f};
+    float bassCapabilityTarget_{1.0f};
+    float bassCapabilityCurrent_{1.0f};
+    float controlSmoothingCoeff_{1.0f};
 
     float low110_{0.0f};
     float low42_{0.0f};
