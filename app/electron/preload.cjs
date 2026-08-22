@@ -20,16 +20,10 @@ function bufferedChannel(channel, maxBuffered = 16, keepLatestOnly = false) {
   return (callback) => {
     if (typeof callback !== 'function') return () => {};
     subscribers.add(callback);
-
-    // Preload runs before the renderer bundle. Main-process messages can arrive
-    // during that gap, especially tray/global-hotkey actions on a cold window.
-    // Drain them only after React has installed its subscriber so no requested
-    // action disappears between did-finish-load and useEffect registration.
     while (buffered.length > 0) {
       const payload = buffered.shift();
       try { callback(payload); } catch { /* preserve the remaining IPC bridge */ }
     }
-
     return () => subscribers.delete(callback);
   };
 }
@@ -39,37 +33,19 @@ const subscribeHostState = bufferedChannel('pulsefx:host-state', 4, true);
 const subscribeQuickAction = bufferedChannel('pulsefx:quick-action', 32, false);
 
 contextBridge.exposeInMainWorld('pulsefx', {
-  command(name, ...args) {
-    return ipcRenderer.invoke('pulsefx:command', { name, args });
-  },
-  loadSettings() {
-    return ipcRenderer.invoke('pulsefx:settings:load');
-  },
-  saveSettings(settings) {
-    return ipcRenderer.invoke('pulsefx:settings:save', settings);
-  },
-  listHeadphones() {
-    return ipcRenderer.invoke('pulsefx:autoeq:list');
-  },
-  applyHeadphoneProfile(modelPath) {
-    return ipcRenderer.invoke('pulsefx:autoeq:apply', modelPath);
-  },
-  openAudioFiles() {
-    return ipcRenderer.invoke('pulsefx:media:open');
-  },
-  searchRadio(query = '') {
-    return ipcRenderer.invoke('pulsefx:radio:search', query);
-  },
-  recordRadioClick(stationuuid) {
-    return ipcRenderer.invoke('pulsefx:radio:click', stationuuid);
-  },
-  onEvent(callback) {
-    return subscribeEvent(callback);
-  },
-  onHostState(callback) {
-    return subscribeHostState(callback);
-  },
-  onQuickAction(callback) {
-    return subscribeQuickAction(callback);
-  },
+  command(name, ...args) { return ipcRenderer.invoke('pulsefx:command', { name, args }); },
+  loadSettings() { return ipcRenderer.invoke('pulsefx:settings:load'); },
+  saveSettings(settings) { return ipcRenderer.invoke('pulsefx:settings:save', settings); },
+  listHeadphones() { return ipcRenderer.invoke('pulsefx:autoeq:list'); },
+  applyHeadphoneProfile(modelPath) { return ipcRenderer.invoke('pulsefx:autoeq:apply', modelPath); },
+  openAudioFiles() { return ipcRenderer.invoke('pulsefx:media:open'); },
+  searchRadio(query = '') { return ipcRenderer.invoke('pulsefx:radio:search', query); },
+  browseRadio(mode, countryCode = '') { return ipcRenderer.invoke('pulsefx:radio:browse', { mode, countryCode }); },
+  listRadioCountries() { return ipcRenderer.invoke('pulsefx:radio:countries'); },
+  getLocaleCountryCode() { return ipcRenderer.invoke('pulsefx:system:country-code'); },
+  openDefaultApps() { return ipcRenderer.invoke('pulsefx:system:default-apps'); },
+  recordRadioClick(stationuuid) { return ipcRenderer.invoke('pulsefx:radio:click', stationuuid); },
+  onEvent(callback) { return subscribeEvent(callback); },
+  onHostState(callback) { return subscribeHostState(callback); },
+  onQuickAction(callback) { return subscribeQuickAction(callback); },
 });
