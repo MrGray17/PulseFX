@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, globalShortcut, Menu, Tray } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, globalShortcut, Menu, Tray, shell } = require('electron');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -299,10 +299,6 @@ async function commandNative(name, args = []) {
 
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
-      // The protocol is FIFO and intentionally tiny. Once a response deadline
-      // is missed, a late reply can no longer be safely distinguished from the
-      // next command's reply. Reject every request tied to this stream and
-      // restart the host instead of ever risking cross-command desynchronization.
       if (hostProcess === commandProcess && hostGeneration === commandGeneration) {
         invalidateHostProtocol(new Error(`native host timed out handling ${name}`));
       } else {
@@ -336,8 +332,6 @@ function quickToggleSurround() {
   if (mainWindow && !mainWindow.isDestroyed()) {
     dispatchQuickAction(action);
   } else {
-    // Apply audio immediately without opening a window, and keep the explicit
-    // state queued so a later renderer recreation cannot display stale controls.
     pendingQuickActions.push(action);
     commandNative('surround', [enabled ? 0.48 : 0]).catch((error) => broadcast('pulsefx:host-state', { running: false, error: error.message }));
   }
@@ -479,6 +473,24 @@ ipcMain.handle('pulsefx:media:open', async () => {
 ipcMain.handle('pulsefx:radio:search', async (_event, query) => {
   if (typeof query !== 'string' || query.length > 100) throw new Error('invalid radio search');
   return radio.searchStations(query);
+});
+ipcMain.handle('pulsefx:radio:browse', async (_event, request) => {
+  if (!request || typeof request !== 'object' || Array.isArray(request)) throw new Error('invalid radio browse request');
+  const mode = request.mode;
+  if (!['popular', 'local', 'country'].includes(mode)) throw new Error('invalid radio browse mode');
+  let countryCode = typeof request.countryCode === 'string' ? request.countryCode : '';
+  if (mode === 'local') countryCode = app.getLocaleCountryCode();
+  return radio.browseStations(mode, countryCode);
+});
+ipcMain.handle('pulsefx:radio:countries', async () => radio.listCountryCodes());
+ipcMain.handle('pulsefx:system:country-code', () => app.getLocaleCountryCode());
+ipcMain.handle('pulsefx:system:default-apps', async () => {
+  try {
+    await shell.openExternal('ms-settings:defaultapps');
+    return true;
+  } catch {
+    return false;
+  }
 });
 ipcMain.handle('pulsefx:radio:click', async (_event, stationuuid) => radio.recordClick(stationuuid));
 
