@@ -25,6 +25,7 @@ SignaturePlan makeAdaptiveSignature(const SignatureInputs& raw) noexcept {
     const float harshness = unit(raw.harshnessRisk, 0.0f);
     const float volume = unit(raw.endpointVolume, 0.5f);
     const float limiterStress = unit(raw.limiterStress, 0.0f);
+    const float strength = std::clamp(finiteOr(raw.strength, 1.0f), 0.50f, 1.25f);
 
     // Endpoint volume is only a relative control signal, never claimed as SPL.
     // At low settings, modest bass/detail compensation counters the normal
@@ -39,9 +40,10 @@ SignaturePlan makeAdaptiveSignature(const SignatureInputs& raw) noexcept {
 
     SignaturePlan plan{};
 
-    // Reserve headroom for correction and enhancement up front. This remains
-    // bounded even with malicious/non-finite policy inputs.
-    plan.preampDb = -1.25f - 3.0f * correction - 1.5f * limiterStress;
+    // Reserve headroom for correction and enhancement up front. Stronger user
+    // preference spends a little more preamp headroom before any boost happens.
+    plan.preampDb = -1.25f - 3.0f * correction - 1.5f * limiterStress
+        - std::max(0.0f, strength - 1.0f) * 1.8f;
 
     // Real LF boost is most useful when the transducer can reproduce it.
     // Weak-LF devices instead receive more missing-fundamental synthesis.
@@ -121,6 +123,20 @@ SignaturePlan makeAdaptiveSignature(const SignatureInputs& raw) noexcept {
         plan.fidelity *= 0.85f;
     }
 
+    // Strength scales only optional enhancement. It never scales correction or
+    // bypasses headroom protection. Spatial timing/gain tuning moves gently so
+    // the upper strength range becomes more externalized rather than simply
+    // louder or more bass-heavy.
+    plan.physicalBass *= strength;
+    plan.virtualBass *= strength;
+    plan.clarity *= strength;
+    plan.fidelity *= strength;
+    plan.dynamics *= mix(0.78f, 1.08f, (strength - 0.50f) / 0.75f);
+    plan.surround *= mix(0.72f, 1.10f, (strength - 0.50f) / 0.75f);
+    const float spatialStrength = std::clamp((strength - 1.0f) * 0.12f, -0.06f, 0.03f);
+    plan.spatial.itdScale *= 1.0f + spatialStrength;
+    plan.spatial.contralateralGain *= 1.0f - spatialStrength * 0.70f;
+
     plan.physicalBass *= headroomScale;
     plan.virtualBass *= headroomScale;
     plan.clarity *= mix(1.0f, 0.72f, limiterStress);
@@ -134,7 +150,7 @@ SignaturePlan makeAdaptiveSignature(const SignatureInputs& raw) noexcept {
     plan.clarity = std::clamp(plan.clarity, 0.0f, 0.38f);
     plan.fidelity = std::clamp(plan.fidelity, 0.0f, 0.44f);
     plan.surround = std::clamp(plan.surround, 0.0f, 0.62f);
-    plan.ambience = 0.0f; // early reflections belong in the future spatial renderer, not double-processing
+    plan.ambience = 0.0f; // early reflections are integrated into the spatial renderer
     plan.dynamics = std::clamp(plan.dynamics, 0.0f, 0.24f);
     plan.spatial = sanitizeSpatialProfileTuning(plan.spatial);
     return plan;
