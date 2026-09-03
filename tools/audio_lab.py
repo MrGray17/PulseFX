@@ -2,11 +2,14 @@
 """PulseFX reference-matching audio lab.
 
 Compares two mono/stereo PCM WAV captures after automatic time alignment and
-RMS loudness matching. It deliberately uses only Python's standard library so
-it can run on a clean Windows installation and in CI.
+RMS level matching. The analyzer deliberately uses only Python's standard
+library so it can run on a clean Windows installation and in CI.
 
 The tool is meant for controlled A/B captures of the *same source*. It reports
 objective deltas rather than claiming that one processing chain sounds better.
+In addition to spectral/stereo matching, it checks clipping, channel balance,
+short-term dynamics, and transient crest preservation so a processor cannot
+look "close" while flattening the music.
 """
 from __future__ import annotations
 
@@ -14,6 +17,7 @@ import argparse
 import json
 import math
 import struct
+import sys
 import wave
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +31,15 @@ class Audio:
     sample_rate: int
     channels: int
     frames: list[tuple[float, ...]]
+
+
+@dataclass(frozen=True)
+class IntegrityThresholds:
+    max_loudness_bias_db: float = 1.0
+    max_added_clip_fraction: float = 1.0e-4
+    max_channel_balance_delta_db: float = 0.75
+    max_transient_crest_loss_db: float = 2.5
+    max_dc_abs: float = 0.01
 
 
 def _decode_pcm(raw: bytes, width: int) -> list[float]:
@@ -83,21 +96,41 @@ def db(value: float) -> float:
     return 20.0 * math.log10(max(abs(value), 1e-12))
 
 
+def percentile(values: list[float], fraction: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    position = min(1.0, max(0.0, fraction)) * (len(ordered) - 1)
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+    if lower == upper:
+        return ordered[lower]
+    blend = position - lower
+    return ordered[lower] * (1.0 - blend) + ordered[upper] * blend
+
+
 def gain(audio: Audio, factor: float) -> Audio:
     return Audio(audio.sample_rate, audio.channels, [tuple(x * factor for x in frame) for frame in audio.frames])
+
+
+def _pearson(a: list[float], b: list[float]) -> float:
+    count = min(len(a), len(b))
+    if count == 0:
+        return 1.0
+    a = a[:count]
+    b = b[:count]
+    ma = sum(a) / count
+    mb = sum(b) / count
+    numerator = sum((x-ma)*(y-mb) for x, y in zip(a, b))
+    da = math.sqrt(sum((x-ma)**2 for x in a))
+    dbv = math.sqrt(sum((y-mb)**2 for y in b))
+    return numerator / max(da*dbv, 1e-12)
 
 
 def correlation(audio: Audio) -> float:
     if audio.channels != 2 or not audio.frames:
         return 1.0
-    left = [f[0] for f in audio.frames]
-    right = [f[1] for f in audio.frames]
-    ml = sum(left) / len(left)
-    mr = sum(right) / len(right)
-    numerator = sum((l-ml)*(r-mr) for l, r in zip(left, right))
-    dl = math.sqrt(sum((l-ml)**2 for l in left))
-    dr = math.sqrt(sum((r-mr)**2 for r in right))
-    return numerator / max(dl*dr, 1e-12)
+    return _pearson([f[0] for f in audio.frames], [f[1] for f in audio.frames])
 
 
 def mid_side(audio: Audio) -> tuple[float, float]:
@@ -106,6 +139,46 @@ def mid_side(audio: Audio) -> tuple[float, float]:
     mid = [0.5 * (f[0] + f[1]) for f in audio.frames]
     side = [0.5 * (f[0] - f[1]) for f in audio.frames]
     return rms(mid), rms(side)
+
+
+def channel_balance_db(audio: Audio) -> float:
+    if audio.channels != 2 or not audio.frames:
+        return 0.0
+    left = rms(f[0] for f in audio.frames)
+    right = rms(f[1] for f in audio.frames)
+    return db(left / max(right, 1e-12))
+
+
+def _window_levels(samples: list[float], window: int, hop: int) -> list[float]:
+    if not samples:
+        return []
+    window = max(1, window)
+    hop = max(1, hop)
+    result: list[float] = []
+    for start in range(0, max(1, len(samples) - window + 1), hop):
+        chunk = samples[start:start+window]
+        if chunk:
+            result.append(db(rms(chunk)))
+    if not result:
+        result.append(db(rms(samples)))
+    return result
+
+
+def _window_crest(samples: list[float], window: int, hop: int) -> list[float]:
+    if not samples:
+        return []
+    window = max(1, window)
+    hop = max(1, hop)
+    result: list[float] = []
+    for start in range(0, max(1, len(samples) - window + 1), hop):
+        chunk = samples[start:start+window]
+        if not chunk:
+            continue
+        level = rms(chunk)
+        peak = max(abs(value) for value in chunk)
+        if level > 1e-9:
+            result.append(db(peak / level))
+    return result
 
 
 def goertzel(samples: list[float], rate: int, frequency: float) -> float:
@@ -199,19 +272,79 @@ def metrics(audio: Audio) -> dict[str, float]:
     peak = max((abs(x) for x in samples), default=0.0)
     dc = sum(samples) / max(1, len(samples))
     mid, side = mid_side(audio)
+
+    short_levels = _window_levels(
+        mono_samples,
+        max(1, int(audio.sample_rate * 0.400)),
+        max(1, int(audio.sample_rate * 0.100)),
+    )
+    transient_crest = _window_crest(
+        mono_samples,
+        max(1, int(audio.sample_rate * 0.010)),
+        max(1, int(audio.sample_rate * 0.005)),
+    )
+    clip_fraction = sum(1 for x in samples if abs(x) >= 0.999) / max(1, len(samples))
+
     result = {
         "rms_dbfs": db(level),
         "peak_dbfs": db(peak),
         "crest_db": db(peak / max(level, 1e-12)),
         "dc": dc,
+        "clip_fraction": clip_fraction,
         "correlation": correlation(audio),
+        "channel_balance_db": channel_balance_db(audio),
         "mid_rms_dbfs": db(mid),
         "side_rms_dbfs": db(side),
         "side_to_mid_db": db(side / max(mid, 1e-12)),
+        "short_term_p10_dbfs": percentile(short_levels, 0.10),
+        "short_term_p50_dbfs": percentile(short_levels, 0.50),
+        "short_term_p95_dbfs": percentile(short_levels, 0.95),
+        "short_term_range_db": percentile(short_levels, 0.95) - percentile(short_levels, 0.10),
+        "transient_crest_p50_db": percentile(transient_crest, 0.50),
+        "transient_crest_p95_db": percentile(transient_crest, 0.95),
     }
     for freq in PROBES:
         result[f"probe_{freq:g}"] = db(goertzel(mono_samples, audio.sample_rate, freq))
     return result
+
+
+def _stereo_waveform_correlations(reference: Audio, candidate: Audio) -> dict[str, float]:
+    ref_mid = mono(reference)
+    cand_mid = mono(candidate)
+    result = {"mid_waveform_correlation": _pearson(ref_mid, cand_mid)}
+    if reference.channels != 2:
+        result["side_waveform_correlation"] = 1.0
+        return result
+    ref_side = [0.5 * (f[0] - f[1]) for f in reference.frames]
+    cand_side = [0.5 * (f[0] - f[1]) for f in candidate.frames]
+    if rms(ref_side) < 1e-9 and rms(cand_side) < 1e-9:
+        result["side_waveform_correlation"] = 1.0
+    elif rms(ref_side) < 1e-9 or rms(cand_side) < 1e-9:
+        result["side_waveform_correlation"] = 0.0
+    else:
+        result["side_waveform_correlation"] = _pearson(ref_side, cand_side)
+    return result
+
+
+def evaluate_integrity(report: dict[str, object], thresholds: IntegrityThresholds | None = None) -> dict[str, object]:
+    thresholds = thresholds or IntegrityThresholds()
+    reference = report["reference"]
+    candidate = report["candidate"]
+    delta = report["delta"]
+    violations: list[str] = []
+
+    if abs(float(report["candidate_match_gain_db"])) > thresholds.max_loudness_bias_db:
+        violations.append("loudness_bias")
+    if float(candidate["clip_fraction"]) - float(reference["clip_fraction"]) > thresholds.max_added_clip_fraction:
+        violations.append("added_clipping")
+    if abs(float(delta["channel_balance_db"])) > thresholds.max_channel_balance_delta_db:
+        violations.append("channel_balance")
+    if float(delta["transient_crest_p95_db"]) < -thresholds.max_transient_crest_loss_db:
+        violations.append("transient_crest_loss")
+    if abs(float(candidate["dc"])) > thresholds.max_dc_abs:
+        violations.append("dc_offset")
+
+    return {"passed": not violations, "violations": violations}
 
 
 def compare(reference: Audio, candidate: Audio, max_alignment_seconds: float = 0.75) -> dict[str, object]:
@@ -236,7 +369,7 @@ def compare(reference: Audio, candidate: Audio, max_alignment_seconds: float = 0
     }
     spectral_delta_rms = math.sqrt(sum(value*value for value in spectral_deltas.values()) / len(spectral_deltas))
 
-    return {
+    report: dict[str, object] = {
         "alignment_lag_frames": lag,
         "alignment_lag_ms": 1000.0 * lag / reference.sample_rate,
         "candidate_match_gain_db": db(match_gain),
@@ -250,6 +383,9 @@ def compare(reference: Audio, candidate: Audio, max_alignment_seconds: float = 0
         "sample_rate": reference.sample_rate,
         "channels": reference.channels,
     }
+    report.update(_stereo_waveform_correlations(reference, candidate))
+    report["integrity"] = evaluate_integrity(report)
+    return report
 
 
 def print_report(report: dict[str, object]) -> None:
@@ -257,24 +393,35 @@ def print_report(report: dict[str, object]) -> None:
     print(f"RMS-match gain applied to candidate: {report['candidate_match_gain_db']:+.2f} dB")
     ref = report["reference"]
     cand = report["candidate"]
-    print("\nmetric                 reference     PulseFX      delta")
-    print("-" * 61)
-    keys = ["rms_dbfs", "peak_dbfs", "crest_db", "correlation", "side_to_mid_db", "dc"]
+    print("\nmetric                       reference     PulseFX      delta")
+    print("-" * 67)
+    keys = [
+        "rms_dbfs", "peak_dbfs", "crest_db", "transient_crest_p95_db",
+        "short_term_range_db", "correlation", "side_to_mid_db",
+        "channel_balance_db", "clip_fraction", "dc",
+    ]
     for key in keys:
-        print(f"{key:22s} {ref[key]:10.4f} {cand[key]:10.4f} {cand[key]-ref[key]:+10.4f}")
-    print("\nSpectral probes after alignment + loudness match")
+        print(f"{key:28s} {ref[key]:10.4f} {cand[key]:10.4f} {cand[key]-ref[key]:+10.4f}")
+    print(f"\nAligned mid waveform correlation:  {report['mid_waveform_correlation']:.6f}")
+    print(f"Aligned side waveform correlation: {report['side_waveform_correlation']:.6f}")
+    print("\nSpectral probes after alignment + RMS match")
     for frequency, delta in report["spectral_delta_db"].items():
         print(f"{float(frequency):7.1f} Hz: {delta:+7.2f} dB")
     print(f"\nSpectral delta RMS: {report['spectral_delta_rms_db']:.3f} dB")
     print(f"Residual/null RMS relative to reference: {report['residual_relative_db']:.2f} dB")
+    integrity = report["integrity"]
+    print(f"Integrity gate: {'PASS' if integrity['passed'] else 'FAIL'}")
+    if integrity["violations"]:
+        print("Violations: " + ", ".join(integrity["violations"]))
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Aligned, loudness-matched PulseFX A/B WAV comparison")
+    parser = argparse.ArgumentParser(description="Aligned, level-matched PulseFX A/B WAV comparison")
     parser.add_argument("reference", type=Path, help="reference capture, e.g. Boom 3D")
     parser.add_argument("candidate", type=Path, help="PulseFX capture")
     parser.add_argument("--max-alignment-ms", type=float, default=750.0, help="maximum absolute capture offset to search")
     parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    parser.add_argument("--fail-on-integrity", action="store_true", help="exit non-zero on clipping, balance, transient, DC, or loudness-bias violations")
     args = parser.parse_args()
 
     report = compare(
@@ -286,6 +433,8 @@ def main() -> None:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
         print_report(report)
+    if args.fail_on_integrity and not report["integrity"]["passed"]:
+        sys.exit(2)
 
 
 if __name__ == "__main__":
